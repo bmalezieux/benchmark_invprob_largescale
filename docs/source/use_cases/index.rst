@@ -68,6 +68,24 @@ Both commands can select one dataset directly or use an experiment configuration
 Preparation is cached by BenchOpt. Use ``benchopt prepare --force`` when a cached
 preparation must be repeated.
 
+Caching Denoiser Weights
+------------------------
+
+Pretrained denoiser weights belong to the solver rather than the dataset, so
+``benchopt prepare`` does not fetch them. A solver that uses one, such as PnP
+with DRUNet, downloads it on first use, which blocks on a compute node without
+internet access. Cache the weights from a login node instead:
+
+.. code-block:: bash
+
+   toolsbench prepareweights                    # every architecture with weights
+   toolsbench prepareweights drunet             # only the ones named
+   toolsbench prepareweights scunet restormer   # any deepinv.models denoiser
+
+Names resolve against the ``DENOISERS`` registry in ``toolsbench.utils`` first,
+then against ``deepinv.models``. Architectures without pretrained weights are
+skipped with a message; only registered ones can be built in 3D.
+
 .. toctree::
    :hidden:
    :maxdepth: 1

@@ -18,6 +18,7 @@ except ImportError:
 
 import inspect
 import math
+from dataclasses import dataclass
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,6 +34,59 @@ except ImportError:
     DRUNet = None
     DnCNN = None
     UNet = None
+
+
+@dataclass(frozen=True)
+class DenoiserSpec:
+    """How to build one denoiser architecture and where its weights come from.
+
+    ``pretrained_2d`` / ``pretrained_3d`` hold the value passed to the model's
+    ``pretrained`` argument, or ``None`` when the architecture has no weights
+    to download in this benchmark. Architectures whose constructor takes no
+    ``pretrained`` argument at all leave both as ``None``.
+    """
+
+    cls: type
+    pretrained_2d: str | None = None
+    pretrained_3d: str | None = None
+    spatial_dim_arg: bool = False
+
+    @property
+    def has_weights(self):
+        """Whether this architecture has pretrained weights to fetch."""
+        return self.pretrained_2d is not None or self.pretrained_3d is not None
+
+
+#: Registry of available denoisers. Adding an entry here makes the
+#: architecture available to :func:`create_denoiser` and, when it declares
+#: pretrained weights, to ``toolsbench prepareweights`` at the same time.
+DENOISERS = {
+    "drunet": DenoiserSpec(DRUNet, "download", "download_2d", spatial_dim_arg=True),
+    "unet": DenoiserSpec(UNet, spatial_dim_arg=True),
+    "dncnn": DenoiserSpec(DnCNN, spatial_dim_arg=True),
+}
+
+
+def _resolve_spec(arch):
+    """Registry first, then any deepinv.models denoiser with a matching name.
+
+    Falling back to deepinv means an architecture does not have to be listed in
+    :data:`DENOISERS` to be usable; the registry only exists to override what
+    deepinv would do by default, as it does for DnCNN.
+    """
+    key = str(arch).lower()
+    if key in DENOISERS:
+        return DENOISERS[key]
+
+    import deepinv.models as models
+
+    cls = next((getattr(models, n) for n in dir(models) if n.lower() == key), None)
+    if cls is None:
+        raise ValueError(
+            f"Unknown denoiser: {arch}. Choose from {sorted(DENOISERS)} "
+            "or the name of a deepinv.models denoiser."
+        )
+    return DenoiserSpec(cls, "download", "download")
 
 
 def tensor_to_numpy(tensor, clip=True):
@@ -302,12 +356,8 @@ def create_denoiser(arch, ground_truth_shape, device="cpu", dtype=None):
     if dtype is None:
         dtype = torch.float32
 
-    architectures = {"drunet": DRUNet, "unet": UNet, "dncnn": DnCNN}
-    model_cls = architectures.get(str(arch).lower())
-    if model_cls is None:
-        raise ValueError(
-            f"Unknown denoiser: {arch}. Choose from {sorted(architectures)}."
-        )
+    spec = _resolve_spec(arch)
+    model_cls = spec.cls
 
     ndim = len(ground_truth_shape)
     if ndim == 4:
@@ -325,20 +375,70 @@ def create_denoiser(arch, ground_truth_shape, device="cpu", dtype=None):
             f"Unsupported number of channels: {num_channels}. Expected 1 (grayscale) or 3 (color)."
         )
 
-    kwargs = dict(in_channels=num_channels, out_channels=num_channels, dim=dim)
-    if model_cls is DRUNet:
-        # For 3D, deepinv initialises 3D convolutions from 2D pretrained weights via download_2d.
-        kwargs["pretrained"] = "download_2d" if dim == 3 else "download"
-    elif "pretrained" in inspect.signature(model_cls.__init__).parameters:
-        # UNet / DnCNN have no pretrained weights matching these channel counts.
-        kwargs["pretrained"] = None
+    # Architectures accept different subsets of these arguments, so only pass
+    # the ones this one actually declares. ``dim`` is only forwarded for
+    # registered architectures: elsewhere in deepinv the same name means a
+    # layer width (SCUNet defaults to 64, Restormer to 48), so passing a
+    # spatial dimension there would silently build the wrong network.
+    params = inspect.signature(model_cls.__init__).parameters
+    if dim == 3 and not spec.spatial_dim_arg:
+        raise ValueError(f"Denoiser {arch} does not support 3D inputs.")
 
-    return model_cls(**kwargs).to(dtype).to(device).eval()
+    kwargs = {
+        key: value
+        for key, value in dict(
+            in_channels=num_channels, out_channels=num_channels
+        ).items()
+        if key in params
+    }
+    if spec.spatial_dim_arg and "dim" in params:
+        kwargs["dim"] = dim
+    if "pretrained" in params:
+        # For 3D, deepinv initialises 3D convolutions from 2D pretrained weights.
+        kwargs["pretrained"] = spec.pretrained_3d if dim == 3 else spec.pretrained_2d
+
+    try:
+        model = model_cls(**kwargs)
+    except (TypeError, ValueError):
+        # The model rejects this ``pretrained`` value; fall back to its own default.
+        kwargs.pop("pretrained", None)
+        model = model_cls(**kwargs)
+
+    return model.to(dtype).to(device).eval()
 
 
 def create_drunet_denoiser(ground_truth_shape, device="cpu", dtype=None):
     """Create a DRUNet denoiser appropriate for the given ground truth shape."""
     return create_denoiser("drunet", ground_truth_shape, device=device, dtype=dtype)
+
+
+def download_denoiser_weights(names=None):
+    """Cache pretrained denoiser weights in the local torch hub directory.
+
+    Builds and discards one model per channel count: the point is the side
+    effect of ``torch.hub`` writing the checkpoint to disk, so that a later
+    run on a compute node without internet access finds it already cached.
+    A 3D network initialises from the same 2D checkpoints, so the channel
+    count is the only axis that matters here.
+
+    Parameters
+    ----------
+    names : iterable of str, optional
+        Architectures to fetch. Default: every entry in :data:`DENOISERS`
+        declaring pretrained weights. Names without weights are skipped with
+        a message; unknown names raise :class:`ValueError`.
+    """
+    if names is None:
+        names = [name for name, spec in DENOISERS.items() if spec.has_weights]
+
+    for name in names:
+        spec = _resolve_spec(name)
+        if not spec.has_weights:
+            print(f"{name}: no pretrained weights in this benchmark, skipping")
+            continue
+        for num_channels in (1, 3):
+            create_denoiser(name, (1, num_channels, 64, 64), device="cpu")
+        print(f"{name}: cached (1 channel, 3 channels)")
 
 
 def compute_psnr(reconstruction, reference, max_pixel=1.0):
