@@ -25,10 +25,12 @@ import numpy as np
 
 try:
     import torch
+    import deepinv.models
     from deepinv.utils.demo import download_example, load_image
     from deepinv.models import DRUNet, DnCNN, UNet
 except ImportError:
     torch = None
+    deepinv = None
     download_example = None
     load_image = None
     DRUNet = None
@@ -78,9 +80,10 @@ def _resolve_spec(arch):
     if key in DENOISERS:
         return DENOISERS[key]
 
-    import deepinv.models as models
-
-    cls = next((getattr(models, n) for n in dir(models) if n.lower() == key), None)
+    cls = next(
+        (getattr(deepinv.models, n) for n in dir(deepinv.models) if n.lower() == key),
+        None,
+    )
     if cls is None:
         raise ValueError(
             f"Unknown denoiser: {arch}. Choose from {sorted(DENOISERS)} "
