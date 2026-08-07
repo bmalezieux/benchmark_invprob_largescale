@@ -111,6 +111,12 @@ def load_results(
 
     df = df.copy()
     add_hardware_columns(df)
+    if "p_solver_image_size" in df.columns and "p_dataset_image_size" in df.columns:
+        # Solver-side image_size (used to pair image size with GPU count in
+        # strong-scaling sweeps) takes precedence over the dataset default.
+        df["p_dataset_image_size"] = df["p_solver_image_size"].where(
+            df["p_solver_image_size"].notna(), df["p_dataset_image_size"]
+        )
     if "p_dataset_image_size" in df.columns:
         # From the decoded dims, so a 3D volume works as well as a 2D square.
         df["image_mpix"] = df["p_dataset_image_size"].map(
@@ -213,9 +219,9 @@ def summarize_configs(df: pd.DataFrame) -> pd.DataFrame:
     step_agg = (
         step_df.groupby(config_cols, dropna=False)
         .agg(
-            avg_total_time_sec=("objective_total_time_sec", "mean"),
             avg_gradient_time_sec=("objective_gradient_time_sec", "mean"),
             avg_denoise_time_sec=("objective_denoise_time_sec", "mean"),
+            avg_total_time_sec_raw=("objective_total_time_sec", "mean"),
             max_gpu_mb=("objective_max_gpu_mb", "max"),
             timing_start_iter=("stop_val", "min"),
             timing_end_iter=("stop_val", "max"),
@@ -228,6 +234,11 @@ def summarize_configs(df: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
+    # objective_total_time_sec includes non-compute overhead (data loading, sync,
+    # logging); use gradient (physics) + denoise as the true per-step compute time.
+    step_agg["avg_total_time_sec"] = step_agg["avg_gradient_time_sec"].fillna(
+        0
+    ) + step_agg["avg_denoise_time_sec"].fillna(0)
     return final_agg.merge(step_agg, on=config_cols, how="left")
 
 
@@ -293,6 +304,11 @@ def summarize_training_configs(df: pd.DataFrame) -> pd.DataFrame:
         step_df.groupby(config_cols, dropna=False).agg(**aggregations).reset_index()
     )
     summary = final_agg.merge(step_agg, on=config_cols, how="left")
+    # objective_total_time_sec includes non-compute overhead (data loading, sync,
+    # logging); use forward + backward as the true per-step compute time instead.
+    summary["avg_total_time_sec"] = summary["avg_forward_time_sec"].fillna(0) + summary[
+        "avg_backward_time_sec"
+    ].fillna(0)
     summary["avg_other_time_sec"] = np.clip(
         summary["avg_total_time_sec"]
         - summary["avg_forward_time_sec"].fillna(0)
@@ -301,9 +317,9 @@ def summarize_training_configs(df: pd.DataFrame) -> pd.DataFrame:
         a_max=None,
     )
     summary["training_image_size"] = summary.apply(training_image_size, axis=1)
-    summary["training_mpix"] = (
-        summary["training_image_size"].astype(float) ** 2
-    ) / 1_000_000
+    summary["training_mpix"] = summary["training_image_size"].map(
+        lambda size: float(np.prod(normalize_size(size))) / 1_000_000
+    )
     summary["effective_batch_size"] = summary["p_solver_max_batch_size"].astype(float)
     summary["throughput_per_sec"] = (
         summary["effective_batch_size"] / summary["avg_total_time_sec"]
@@ -326,16 +342,23 @@ def best_per_gpu(summary: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def training_image_size(row: pd.Series) -> int:
-    """Return the logical training image size for mixed result schemas."""
-    solver_size = row.get("p_solver_image_size")
-    if pd.notna(solver_size):
-        return int(solver_size)
-    return int(row["p_dataset_image_size"])
+def training_image_size(row: pd.Series):
+    """Return the logical training image size for mixed result schemas.
+
+    An int for square 2D images, or a tuple of ints for 3D volumes.
+    """
+    size = decode_param(row.get("p_solver_image_size"))
+    if size is None or (np.isscalar(size) and pd.isna(size)):
+        size = decode_param(row["p_dataset_image_size"])
+    if isinstance(size, (list, tuple, np.ndarray)):
+        return tuple(int(v) for v in size)
+    return int(size)
 
 
 def format_image_size(size: object) -> str:
-    """Format square image sizes for labels."""
+    """Format image sizes for labels: ``NxN`` for 2D, ``DxHxW`` for 3D volumes."""
+    if isinstance(size, (list, tuple, np.ndarray)):
+        return size_label(size)
     try:
         size_int = int(size)
     except (TypeError, ValueError):
@@ -374,6 +397,63 @@ def style_axes(ax, title: str, xlabel: str, ylabel: str) -> None:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.tick_params(colors="#374151")
+
+
+_DISTRIBUTE_COLUMNS = (
+    "p_solver_distribute_physics",
+    "p_solver_distribute_denoiser",
+    "p_solver_distribute_model",
+)
+
+
+def distributed_flag(df: pd.DataFrame) -> pd.Series:
+    """True where a run is tiled/distributed, across inference and training schemas."""
+    cols = [c for c in _DISTRIBUTE_COLUMNS if c in df.columns]
+    if not cols:
+        return df["n_gpus"] > 1
+    flag = pd.Series(False, index=df.index)
+    for col in cols:
+        flag = flag | df[col].astype(bool)
+    return flag
+
+
+def payload_bytes(df: pd.DataFrame, dtype_bytes: int = 4) -> pd.Series:
+    """Bytes moved by one all_reduce of the full signal tensor (float32 default).
+
+    Both the training unrolled solver and the inference distributed processor
+    all_reduce a tensor shaped like the full image/volume every call, so the
+    payload is channels * pixels * dtype size, independent of GPU count.
+    """
+    channels = df["p_dataset_channels"] if "p_dataset_channels" in df.columns else 1
+    return df["image_mpix"] * 1e6 * channels * dtype_bytes
+
+
+def mark_node_boundary(ax, summary: pd.DataFrame) -> None:
+    """Vertical guide at the smallest GPU count that spans more than one node.
+
+    NVLink (single node) and the cluster network (multiple nodes) have very
+    different bandwidth, so a comm-vs-GPU-count figure without this guide can
+    look like an anomaly at the exact point where it is actually a hardware
+    transition.
+    """
+    if "n_nodes" not in summary.columns or summary["n_nodes"].nunique() < 2:
+        return
+    multi = summary[summary["n_nodes"] > 1]
+    if multi.empty:
+        return
+    boundary = multi["n_gpus"].min()
+    ax.axvline(boundary, color="#9ca3af", linestyle=":", linewidth=1.2, zorder=0)
+    ax.text(
+        boundary,
+        0.97,
+        " multi-node ",
+        transform=ax.get_xaxis_transform(),
+        fontsize=7.5,
+        color="#6b7280",
+        ha="left",
+        va="top",
+        rotation=90,
+    )
 
 
 def set_gpu_axis(ax, values: pd.Series | np.ndarray | list[float]) -> None:
@@ -451,119 +531,6 @@ def problem_size_title(summary: pd.DataFrame) -> str:
     if len(sizes) == 1:
         return f"Problem size {format_image_size(sizes[0])}"
     return "Problem sizes " + ", ".join(format_image_size(size) for size in sizes)
-
-
-def plot_training_strong_scaling(
-    summary: pd.DataFrame,
-    output_path: Path,
-    *,
-    title: str = "Training Strong Scaling Efficiency",
-    filename: str = "strong_scaling.png",
-    group_col: str = "training_image_size",
-    group_label: str = "Image size",
-) -> str:
-    """Plot strong-scaling efficiency for training summaries."""
-    fig, ax = plt.subplots(figsize=(9.5, 6.0))
-    max_efficiency = 100.0
-    all_gpus = sorted(summary["n_gpus"].unique())
-
-    for idx, (group_value, group) in enumerate(
-        summary.groupby(group_col, dropna=False)
-    ):
-        rows = (
-            group.sort_values(["n_gpus", "avg_total_time_sec"], na_position="last")
-            .groupby("n_gpus", as_index=False, dropna=False)
-            .first()
-            .sort_values("n_gpus")
-        )
-        if rows.empty:
-            continue
-        baseline = rows.loc[rows["n_gpus"].idxmin()]
-        baseline_gpus = int(baseline["n_gpus"])
-        baseline_time = float(baseline["avg_total_time_sec"])
-        rows = rows.assign(
-            efficiency_pct=(
-                baseline_time
-                * baseline_gpus
-                / (rows["n_gpus"] * rows["avg_total_time_sec"])
-                * 100
-            )
-        )
-        max_efficiency = max(max_efficiency, float(rows["efficiency_pct"].max()))
-        color = COLORWAY[idx % len(COLORWAY)]
-        if group_col == "training_image_size":
-            label = f"{format_image_size(group_value)} ({baseline_gpus}-GPU baseline)"
-        else:
-            label = f"{group_label} {group_value:g} ({baseline_gpus}-GPU baseline)"
-        ax.plot(
-            rows["n_gpus"],
-            rows["efficiency_pct"],
-            marker="o",
-            markersize=7,
-            linewidth=2.8,
-            color=color,
-            label=label,
-        )
-
-    set_gpu_axis(ax, all_gpus)
-    ax.axhline(100, color="#111827", linestyle="--", linewidth=1.3, alpha=0.55)
-    ax.set_ylim(0, max(110, max_efficiency * 1.12))
-    style_axes(
-        ax,
-        title,
-        "Number of GPUs",
-        "Parallel efficiency (%)",
-    )
-    ax.legend(loc="lower left", ncols=1)
-    fig.tight_layout()
-    return write_figure(fig, output_path, filename)
-
-
-def plot_training_weak_scaling(
-    summary: pd.DataFrame,
-    output_path: Path,
-    *,
-    title: str = "Training Weak Scaling Runtime Ratio",
-    filename: str = "weak_scaling.png",
-) -> str:
-    """Plot weak-scaling runtime ratio for training summaries."""
-    weak = summary.sort_values("n_gpus").copy()
-    if weak.empty:
-        raise ValueError("No rows available for weak-scaling plot.")
-    baseline_time = float(weak.iloc[0]["avg_total_time_sec"])
-    weak["time_ratio"] = weak["avg_total_time_sec"] / baseline_time
-
-    fig, ax = plt.subplots(figsize=(9.2, 5.7))
-    ax.plot(
-        weak["n_gpus"],
-        weak["time_ratio"],
-        marker="o",
-        markersize=7,
-        linewidth=2.8,
-        color=COLORWAY[0],
-        label="measured",
-    )
-    ax.axhline(1, color="#111827", linestyle="--", linewidth=1.3, alpha=0.55)
-    for _, row in weak.iterrows():
-        ax.annotate(
-            format_image_size(row["training_image_size"]),
-            (row["n_gpus"], row["time_ratio"]),
-            xytext=(0, 9),
-            textcoords="offset points",
-            ha="center",
-            fontsize=9,
-            color="#374151",
-        )
-
-    set_gpu_axis(ax, weak["n_gpus"])
-    style_axes(
-        ax,
-        title,
-        "Number of GPUs",
-        "Average step time / 1-GPU time",
-    )
-    fig.tight_layout()
-    return write_figure(fig, output_path, filename)
 
 
 def plot_timing_breakdown_by_gpu(

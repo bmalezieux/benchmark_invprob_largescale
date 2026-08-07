@@ -4,7 +4,6 @@ objective:
 
 dataset:
   - multiframe_superres:
-      image_size: [2048, 4096, 8192]
       num_operators: 8
       noise_level: 0.1
 
@@ -18,17 +17,27 @@ solver:
       profiler_warmup: 0
       profiler_active: 0
       patch_size, overlap, max_batch_size: [
-        [448, 32, 32],
-        [960, 32, 12]
+        [512, 32, 4],
+
       ]
-      slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_physics, distribute_denoiser: [
-        ["gpu:1", 1, 1, false, false],
-        ["gpu:2", 2, 1, true, true],
-        ["gpu:4", 4, 1, true, true],
-        ["gpu:4", 4, 2, true, true],
-        ["gpu:4", 4, 4, true, true],
-        ["gpu:4", 4, 8, true, true],
-        ["gpu:4", 4, 16, true, true],
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_physics, distribute_denoiser, image_size: [
+        ["gpu:1", 1, 1, false, false, 2048],
+        ["gpu:1", 1, 1, true, true, 2048],
+        ["gpu:2", 2, 1, true, true, 2048],
+        ["gpu:4", 4, 1, true, true, 2048],
+
+        ["gpu:1", 1, 1, false, false, 4096],
+        ["gpu:1", 1, 1, true, true, 4096],
+        ["gpu:2", 2, 1, true, true, 4096],
+        ["gpu:4", 4, 1, true, true, 4096],
+        ["gpu:4", 4, 2, true, true, 4096],
+        ["gpu:4", 4, 4, true, true, 4096],
+
+        ["gpu:4", 4, 1, true, true, 8192],
+        ["gpu:4", 4, 2, true, true, 8192],
+        ["gpu:4", 4, 4, true, true, 8192],
+        ["gpu:4", 4, 8, true, true, 8192],
+        ["gpu:4", 4, 16, true, true, 8192],
       ]
 
 

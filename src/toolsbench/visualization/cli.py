@@ -26,19 +26,25 @@ from toolsbench.visualization.training.checkpointing import (
     create_checkpointing_visualizations,
 )
 from toolsbench.visualization.training.comm_time import create_comm_time_visualizations
-from toolsbench.visualization.training.strong_scaling import (
+from toolsbench.visualization.training.scaling import (
     create_strong_scaling_visualizations,
 )
-from toolsbench.visualization.training.weak_scaling import (
-    create_weak_scaling_visualizations,
+from toolsbench.visualization.website.comm import (
+    create_communication_inference_website_data,
+    create_communication_training_website_data,
+)
+from toolsbench.visualization.website.compile_speedup import (
+    create_compile_speedup_website_data,
 )
 from toolsbench.visualization.website.inference_scaling import (
     create_inference_scaling_website_data,
 )
+from toolsbench.visualization.website.training_scaling import (
+    create_training_scaling_website_data,
+)
 
 TRAINING_CREATORS = {
-    "strong_scaling": create_strong_scaling_visualizations,
-    "weak_scaling": create_weak_scaling_visualizations,
+    "scaling": create_strong_scaling_visualizations,
     "comm_time": create_comm_time_visualizations,
     "batch_size": create_batch_size_visualizations,
     "checkpointing": create_checkpointing_visualizations,
@@ -97,7 +103,14 @@ def _build_inference_parser() -> argparse.ArgumentParser:
         aliases=["comm-inference"],
         help="Visualize the denoiser/gradient compute-vs-communication breakdown.",
     )
-    _add_results_args(comm_inference, DEFAULT_INFERENCE_OUTPUT_DIR)
+    _add_results_args(
+        comm_inference,
+        DEFAULT_INFERENCE_OUTPUT_DIR,
+        results_help=(
+            "Parent directory containing a comm_2D/ and a comm_3D/ subfolder, "
+            "each with its own benchopt parquet."
+        ),
+    )
     comm_inference.add_argument(
         "--skip-warmup",
         type=int,
@@ -125,7 +138,17 @@ def _build_training_parser() -> argparse.ArgumentParser:
             aliases=[experiment.replace("_", "-")],
             help=f"Visualize {experiment.replace('_', ' ')} experiments.",
         )
-        _add_results_args(subparser, DEFAULT_TRAINING_OUTPUT_DIR)
+        if experiment == "comm_time":
+            _add_results_args(
+                subparser,
+                DEFAULT_TRAINING_OUTPUT_DIR,
+                results_help=(
+                    "Parent directory containing a comm_2D/ and a comm_3D/ "
+                    "subfolder, each with its own benchopt parquet."
+                ),
+            )
+        else:
+            _add_results_args(subparser, DEFAULT_TRAINING_OUTPUT_DIR)
 
     all_parser = subparsers.add_parser(
         "all",
@@ -175,17 +198,92 @@ def _build_website_parser() -> argparse.ArgumentParser:
         default="site/src/data/results",
         help="Root directory where finding JSON data is written.",
     )
+
+    training_scaling = subparsers.add_parser(
+        "training_scaling",
+        aliases=["training-scaling"],
+        help="Export training scaling, checkpointing, and batch-size data.",
+    )
+    training_scaling.add_argument(
+        "--scaling-results",
+        required=True,
+        help=(
+            "Training strong-scaling parquet file or containing directory; "
+            "the weak-scaling ladders are derived from it too."
+        ),
+    )
+    training_scaling.add_argument(
+        "--checkpointing-results",
+        required=True,
+        help="Training checkpointing parquet file or containing directory.",
+    )
+    training_scaling.add_argument(
+        "--batch-size-results",
+        required=True,
+        help="Training max-batch-size parquet file or containing directory.",
+    )
+    training_scaling.add_argument(
+        "--output-dir",
+        default="site/src/data/results",
+        help="Root directory where finding JSON data is written.",
+    )
+
+    compile_speedup = subparsers.add_parser(
+        "compile_speedup",
+        aliases=["compile-speedup"],
+        help="Export torch.compile denoiser and PnP speedup data.",
+    )
+    compile_speedup.add_argument(
+        "--denoiser-results",
+        required=True,
+        help="Denoiser compile-sweep parquet file or containing directory.",
+    )
+    compile_speedup.add_argument(
+        "--pnp-results",
+        required=True,
+        help="PnP compile-sweep parquet file or containing directory.",
+    )
+    compile_speedup.add_argument(
+        "--output-dir",
+        default="site/src/data/results",
+        help="Root directory where finding JSON data is written.",
+    )
+
+    for finding in ("communication_inference", "communication_training"):
+        study = finding.split("_", maxsplit=1)[1]
+        communication = subparsers.add_parser(
+            finding,
+            aliases=[finding.replace("_", "-")],
+            help=f"Export the {study} compute/transfer/wait communication breakdown.",
+        )
+        communication.add_argument(
+            "--results-2d",
+            required=True,
+            help=f"2D {study} communication parquet file or containing directory.",
+        )
+        communication.add_argument(
+            "--results-3d",
+            required=True,
+            help=f"3D {study} communication parquet file or containing directory.",
+        )
+        communication.add_argument(
+            "--output-dir",
+            default="site/src/data/results",
+            help="Root directory where finding JSON data is written.",
+        )
     return parser
 
 
 def _add_results_args(
     parser: argparse.ArgumentParser,
     default_output_dir: Path,
+    *,
+    results_help: str = "Parquet file or output directory.",
 ) -> None:
     parser.add_argument(
         "--results",
         required=True,
-        help="Parquet file or output directory.",
+        help=results_help,
     )
     parser.add_argument(
         "--output-dir",
@@ -257,6 +355,30 @@ def _run_website(args, parser: argparse.ArgumentParser) -> list[Path]:
             scaling_results=args.scaling_results,
             comm_2d_results=args.comm_2d_results,
             comm_3d_results=args.comm_3d_results,
+            output_dir=Path(args.output_dir),
+        )
+    if finding == "training_scaling":
+        return create_training_scaling_website_data(
+            scaling_results=args.scaling_results,
+            checkpointing_results=args.checkpointing_results,
+            batch_size_results=args.batch_size_results,
+            output_dir=Path(args.output_dir),
+        )
+    if finding == "compile_speedup":
+        return create_compile_speedup_website_data(
+            denoiser_results=args.denoiser_results,
+            pnp_results=args.pnp_results,
+            output_dir=Path(args.output_dir),
+        )
+    if finding in ("communication_inference", "communication_training"):
+        creator = (
+            create_communication_inference_website_data
+            if finding == "communication_inference"
+            else create_communication_training_website_data
+        )
+        return creator(
+            results_2d=args.results_2d,
+            results_3d=args.results_3d,
             output_dir=Path(args.output_dir),
         )
     parser.error(f"Unknown website finding: {args.finding}")

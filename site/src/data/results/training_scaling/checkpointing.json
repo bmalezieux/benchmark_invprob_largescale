@@ -1,0 +1,134 @@
+{
+  "id": "training-checkpointing",
+  "methodology": {
+    "checkpointModes": {
+      "always": "every patch-batch forward is wrapped in torch.utils.checkpoint, so denoiser activations are discarded and recomputed in backward",
+      "auto": "wraps every batch when the rank ends up with more than one batch, that is when ceil(patches / max_batch_size) > 1, and behaves like never otherwise \u2014 so a max_batch_size large enough to hold a rank's whole patch list disables it",
+      "never": "all patch-batch activations are kept for backward",
+      "precondition": "gradients must be tracked; a no-grad pass checkpoints nothing regardless of the mode"
+    },
+    "checkpointedUnit": "one patch-batch, so max_batch_size sets how much is stored even when checkpointing is on",
+    "deviceMemoryMb": 32768,
+    "independentRepetitions": 1,
+    "statusValues": {
+      "did-not-fit": "not run: the configuration exceeds the 32768 MiB per-GPU budget. No measured numbers are attached to these entries",
+      "measured": "run present in the parquet"
+    }
+  },
+  "provenance": {
+    "config": "benchmark_training/configs/experiments/checkpointing.yml",
+    "source": "result_benchmark/benchmark_training/checkpointing/benchopt_run_2026-08-06_21h24m49.parquet",
+    "sourceSha256": "fc9dd310f7168115e175d0ed355ed08869c1d6637dc8d184e5f8dd8cf9382338"
+  },
+  "schemaVersion": 1,
+  "values": [
+    {
+      "backwardPeakMemoryMb": 6308.762695,
+      "backwardSec": 18.956892,
+      "checkpointMode": "always",
+      "forwardPeakMemoryMb": 3499.418945,
+      "forwardSec": 5.74743,
+      "gpuCount": 1,
+      "maxBatchSize": 1,
+      "peakMemoryMb": 6308.762695,
+      "status": "measured",
+      "timeSec": 24.704321
+    },
+    {
+      "backwardPeakMemoryMb": 9395.153809,
+      "backwardSec": 18.681013,
+      "checkpointMode": "always",
+      "forwardPeakMemoryMb": 3972.531738,
+      "forwardSec": 5.803546,
+      "gpuCount": 1,
+      "maxBatchSize": 2,
+      "peakMemoryMb": 9395.153809,
+      "status": "measured",
+      "timeSec": 24.48456
+    },
+    {
+      "backwardPeakMemoryMb": 15576.994141,
+      "backwardSec": 17.948421,
+      "checkpointMode": "always",
+      "forwardPeakMemoryMb": 4928.188965,
+      "forwardSec": 5.621573,
+      "gpuCount": 1,
+      "maxBatchSize": 4,
+      "peakMemoryMb": 15576.994141,
+      "status": "measured",
+      "timeSec": 23.569994
+    },
+    {
+      "backwardPeakMemoryMb": 4872.699707,
+      "backwardSec": 4.839988,
+      "checkpointMode": "always",
+      "forwardPeakMemoryMb": 2067.449219,
+      "forwardSec": 1.492951,
+      "gpuCount": 4,
+      "maxBatchSize": 1,
+      "peakMemoryMb": 4872.699707,
+      "status": "measured",
+      "timeSec": 6.332939
+    },
+    {
+      "backwardPeakMemoryMb": 7938.495605,
+      "backwardSec": 4.713341,
+      "checkpointMode": "always",
+      "forwardPeakMemoryMb": 2546.699219,
+      "forwardSec": 1.479837,
+      "gpuCount": 4,
+      "maxBatchSize": 2,
+      "peakMemoryMb": 7938.495605,
+      "status": "measured",
+      "timeSec": 6.193178
+    },
+    {
+      "backwardPeakMemoryMb": 13995.956543,
+      "backwardSec": 4.653364,
+      "checkpointMode": "always",
+      "forwardPeakMemoryMb": 3500.543457,
+      "forwardSec": 1.47009,
+      "gpuCount": 4,
+      "maxBatchSize": 4,
+      "peakMemoryMb": 13995.956543,
+      "status": "measured",
+      "timeSec": 6.123454
+    },
+    {
+      "backwardPeakMemoryMb": 4674.362305,
+      "backwardSec": 1.419312,
+      "checkpointMode": "always",
+      "forwardPeakMemoryMb": 2001.386719,
+      "forwardSec": 0.487758,
+      "gpuCount": 16,
+      "maxBatchSize": 1,
+      "peakMemoryMb": 4674.362305,
+      "status": "measured",
+      "timeSec": 1.90707
+    },
+    {
+      "backwardPeakMemoryMb": 15329.425293,
+      "backwardSec": 1.064854,
+      "checkpointMode": "never",
+      "forwardPeakMemoryMb": 14978.276855,
+      "forwardSec": 0.491285,
+      "gpuCount": 16,
+      "maxBatchSize": 1,
+      "peakMemoryMb": 15329.425293,
+      "status": "measured",
+      "timeSec": 1.556139
+    },
+    {
+      "checkpointMode": "never",
+      "gpuCount": 1,
+      "maxBatchSize": 1,
+      "status": "did-not-fit"
+    },
+    {
+      "checkpointMode": "never",
+      "gpuCount": 4,
+      "maxBatchSize": 1,
+      "status": "did-not-fit"
+    }
+  ]
+}

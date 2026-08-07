@@ -1,0 +1,167 @@
+{
+  "id": "training-strong-scaling",
+  "methodology": {
+    "baselineByImageSize": {
+      "1024x1024": {
+        "gpuCount": 1,
+        "reference": "1-GPU distributed",
+        "timeSec": 6.247004
+      },
+      "4096x4096": {
+        "gpuCount": 1,
+        "reference": "1-GPU distributed",
+        "timeSec": 101.164009
+      },
+      "8192x8192": {
+        "gpuCount": 4,
+        "reference": "4-GPU distributed",
+        "timeSec": 103.725587
+      }
+    },
+    "checkpointing": "always, for every run in this experiment",
+    "deviceMemoryMb": 32768,
+    "efficiency": "100 x speedup x baselineGpuCount / gpuCount",
+    "independentRepetitions": 1,
+    "maxBatchSize": 1,
+    "speedup": "baseline step time / step time",
+    "stepTime": "mean per-step forward + backward time; the benchopt wall-clock total also contains data loading and logging and is not used"
+  },
+  "provenance": {
+    "config": "benchmark_training/configs/experiments/strong_scaling.yml",
+    "source": "result_benchmark/benchmark_training/strong_scaling/benchopt_run_2026-08-07_06h33m56.parquet",
+    "sourceSha256": "753646b2abd296dd8fd3bc2e4261f7a751dec8d322cd4677b87aa807c420649b"
+  },
+  "schemaVersion": 1,
+  "values": [
+    {
+      "backwardSec": 4.793593,
+      "efficiencyPct": 100.0,
+      "forwardSec": 1.453411,
+      "gpuCount": 1,
+      "imageSize": "1024x1024",
+      "peakMemoryMb": 4355.34082,
+      "speedup": 1.0,
+      "timeSec": 6.247004
+    },
+    {
+      "backwardSec": 2.412891,
+      "efficiencyPct": 99.199061,
+      "forwardSec": 0.73583,
+      "gpuCount": 2,
+      "imageSize": "1024x1024",
+      "peakMemoryMb": 4102.078613,
+      "speedup": 1.983981,
+      "timeSec": 3.148721
+    },
+    {
+      "backwardSec": 1.288924,
+      "efficiencyPct": 93.826188,
+      "forwardSec": 0.375591,
+      "gpuCount": 4,
+      "imageSize": "1024x1024",
+      "peakMemoryMb": 3928.63623,
+      "speedup": 3.753048,
+      "timeSec": 1.664515
+    },
+    {
+      "backwardSec": 77.765984,
+      "efficiencyPct": 100.0,
+      "forwardSec": 23.398025,
+      "gpuCount": 1,
+      "imageSize": "4096x4096",
+      "peakMemoryMb": 14945.014648,
+      "speedup": 1.0,
+      "timeSec": 101.164009
+    },
+    {
+      "backwardSec": 38.42065,
+      "efficiencyPct": 101.102649,
+      "forwardSec": 11.609696,
+      "gpuCount": 2,
+      "imageSize": "4096x4096",
+      "peakMemoryMb": 11111.15918,
+      "speedup": 2.022053,
+      "timeSec": 50.030346
+    },
+    {
+      "backwardSec": 19.412895,
+      "efficiencyPct": 99.905284,
+      "forwardSec": 5.902085,
+      "gpuCount": 4,
+      "imageSize": "4096x4096",
+      "peakMemoryMb": 9190.231445,
+      "speedup": 3.996211,
+      "timeSec": 25.31498
+    },
+    {
+      "backwardSec": 10.106921,
+      "efficiencyPct": 95.407591,
+      "forwardSec": 3.147266,
+      "gpuCount": 8,
+      "imageSize": "4096x4096",
+      "peakMemoryMb": 8997.59082,
+      "speedup": 7.632607,
+      "timeSec": 13.254188
+    },
+    {
+      "backwardSec": 5.572244,
+      "efficiencyPct": 83.895572,
+      "forwardSec": 1.964209,
+      "gpuCount": 16,
+      "imageSize": "4096x4096",
+      "peakMemoryMb": 8900.62207,
+      "speedup": 13.423291,
+      "timeSec": 7.536453
+    },
+    {
+      "backwardSec": 80.32227,
+      "efficiencyPct": 100.0,
+      "forwardSec": 23.403317,
+      "gpuCount": 4,
+      "imageSize": "8192x8192",
+      "peakMemoryMb": 25884.043945,
+      "speedup": 1.0,
+      "timeSec": 103.725587
+    },
+    {
+      "backwardSec": 41.402937,
+      "efficiencyPct": 96.152692,
+      "forwardSec": 12.535016,
+      "gpuCount": 8,
+      "imageSize": "8192x8192",
+      "peakMemoryMb": 25118.02832,
+      "speedup": 1.923054,
+      "timeSec": 53.937953
+    },
+    {
+      "backwardSec": 23.626353,
+      "efficiencyPct": 82.377474,
+      "forwardSec": 7.852394,
+      "gpuCount": 16,
+      "imageSize": "8192x8192",
+      "peakMemoryMb": 24734.15332,
+      "speedup": 3.295099,
+      "timeSec": 31.478747
+    },
+    {
+      "backwardSec": 12.952314,
+      "efficiencyPct": 72.051336,
+      "forwardSec": 5.04277,
+      "gpuCount": 32,
+      "imageSize": "8192x8192",
+      "peakMemoryMb": 24541.918945,
+      "speedup": 5.764107,
+      "timeSec": 17.995084
+    },
+    {
+      "backwardSec": 8.032686,
+      "efficiencyPct": 55.069548,
+      "forwardSec": 3.739427,
+      "gpuCount": 64,
+      "imageSize": "8192x8192",
+      "peakMemoryMb": 24447.106445,
+      "speedup": 8.811128,
+      "timeSec": 11.772113
+    }
+  ]
+}

@@ -1,0 +1,575 @@
+---
+title: "Communication under the hood: transfer vs wait"
+description: "Separating pure data transfer from idle rank skew in distributed training and inference, and checking the result against real achievable bandwidth."
+eyebrow: "Communication breakdown"
+featured: true
+pageType: "article"
+landingSection: "findings"
+-------------------
+
+import ResultChart from "../../../components/results/ResultChart.astro";
+import commInferenceData from "../../../data/results/communication/communication-inference.json";
+import commTrainingData from "../../../data/results/communication/communication-training.json";
+import {
+communicationShareInferenceSpec,
+communicationShareTrainingSpec,
+communicationAbsoluteInferenceSpec,
+communicationAbsoluteTrainingSpec,
+communicationWaitSpec,
+communicationLbSpec,
+communicationCommESpec,
+communicationBandwidthSpec,
+} from "../../../lib/results/commCharts";
+
+export const repo = "https://github.com/numpex/benchmark_invprob_largescale/blob/main/";
+export const inferenceConfigHref = (name) =>
+  `${repo}benchmark_inference/configs/experiments/${name}`;
+export const trainingConfigHref = (name) =>
+  `${repo}benchmark_training/configs/experiments/${name}`;
+
+<p class="lead">
+  Splitting a computation across many GPUs means the GPUs cannot work in
+  complete isolation. At some point they need to exchange information — a
+  gradient, an updated tensor, a piece of an image — before they can
+  continue. That exchange is what we call <strong>communication</strong>, and
+  this page looks inside it: not to ask how much communication there is, but
+  what that communication is actually made of. That distinction is what lets
+  you tell <em>why</em> adding more GPUs to a given section keeps paying off,
+  slows down, or stops helping altogether — and, when it stops, whether the
+  fix is rebalancing work across GPUs or something inherent to how much data
+  has to move, rather than just knowing "communication is expensive" without
+  knowing which problem you actually have.
+</p>
+
+**What do we mean by "communication," concretely?** Every GPU-to-GPU exchange
+in this benchmark happens through a *collective operation* — specifically an
+`all_reduce`: every participating rank contributes its own tensor, the
+collective combines the contributions (by summing them), and every rank ends
+up with the same combined result. None of the actual workload — the neural
+network, the physics operator — happens inside that operation; it exists
+purely to keep every GPU's copy of the data consistent. So the time spent on
+one section of one iteration splits cleanly in two:
+
+```
+section time = compute + communication
+```
+
+`compute` is the useful work — the forward pass, the gradient evaluation —
+and it is the part we are trying to speed up by adding more GPUs.
+`communication` is everything else: the price paid for keeping those GPUs
+coordinated.
+
+**Communication itself is not one thing.** It splits again, into `transfer`
+and `wait`:
+
+```
+communication = transfer + wait
+```
+
+- **`transfer`** is the real data movement — the actual bytes of a tensor
+  travelling over NVLink or the network from one GPU to another. This part is
+  genuinely necessary: the collective cannot produce a correct result without
+  moving the data, and it would still happen even in a perfectly balanced,
+  perfectly synchronized run.
+- **`wait`** is idle time — a GPU sitting inside the collective operation
+  doing nothing, because the operation cannot finish until *every*
+  participating GPU has arrived at it. `wait` has up to three distinct
+  causes, worth telling apart:
+  1. **Uneven work.** If the computation is split unevenly across GPUs, the
+     GPU given less work finishes its `compute` earlier, then simply sits
+     idle at the collective until its slower neighbor catches up — for
+     instance, one GPU getting a different number of denoiser tiles, or a
+     different number of physics operators, than another. More on this in
+     "Are the GPUs actually staying balanced?" below.
+  2. **Same work, different finishing time.** Even when every GPU is handed
+     an *identical* job, they do not necessarily finish at exactly the same
+     wall-clock moment. Small hardware and system effects — scheduling
+     jitter, memory contention, clock variation — mean any one GPU can
+     randomly lag behind on a given iteration, with no actual imbalance in
+     what it was asked to do.
+  3. **Different starting point.** A GPU that enters the section already
+     behind — because it was still catching up at the end of the *previous*
+     section — carries that lag into this collective too, even if its own
+     work here is perfectly balanced. Not a factor in the runs measured on
+     this page: every iteration is closed out with a barrier, so every GPU
+     starts each section from the same aligned point regardless of how the
+     previous one went.
+
+These causes all produce the same symptom — a GPU parked inside a collective,
+waiting — but they point to different fixes: the first is a workload
+assignment problem, the second is closer to irreducible system noise, and the
+third is a synchronization question that this benchmark's barrier already
+rules out. What follows can tell you *how much* wait there is, separately
+from transfer, which is already far more than the profiler's raw, fused
+number gives you.
+
+Put together, one section's time now has three additive parts:
+
+```
+section time = compute + transfer + wait
+```
+
+This split matters because reading the fused `transfer + wait` number as
+"communication cost" can be badly wrong. In one of the runs measured below,
+3D denoising looked like 0.87s of communication at 2 GPUs — but the data
+actually being moved cost only 0.05s. The other 0.82s was one GPU waiting
+for the other, not moving a single byte.
+
+
+This page reruns the measurement for both inference and training with the collective time properly split into
+`compute` / `transfer` / `wait`, to answer what that growing share is actually
+made of.
+
+1. **How does communication cost grow as GPU count increases, and what's
+   actually driving that growth** — pure data movement, or one GPU waiting
+   on another?
+2. **Are the GPUs actually staying balanced**, or is idle time quietly eating
+   into what looks like healthy scaling?
+3. **How much of the critical path is communication, and does the measured
+   transfer time correspond to real, physical bandwidth** — the sanity
+   check that this methodology measures data movement and not leftover skew?
+
+## Experimental setting
+
+**Experiments.** Four result sets: inference's `denoiser` and `gradient`
+sections, and training's `forward` and `backward` sections, each run on a 2D
+problem (8192² multiframe super-resolution for inference, 4096² synthetic for
+training) and a 3D (512³ volume) problem. All profiled every
+iteration with `torch.profiler`, on Tesla V100 GPUs, 4 per node, up to 64
+GPUs.
+
+**Configurations.** Four benchmark configurations produce everything below —
+one per result set, two under `benchmark_inference/configs/experiments/` and
+two under `benchmark_training/configs/experiments/`. Each figure on this page
+names the ones it came from:
+
+| Configuration | Problem | Operators | Patch / halo | GPU counts |
+|---|---|---|---|---|
+| <a href={inferenceConfigHref("comm_inference_2D.yml")}><code>comm_inference_2D.yml</code></a> | PnP, multiframe super-resolution, 8192², 3 channels, DRUNet | 8 | 512 / 32, batch 4 | 1, 2, 4, 8, 16, 32, 64 |
+| <a href={inferenceConfigHref("comm_inference_3D.yml")}><code>comm_inference_3D.yml</code></a> | PnP, simulated 512³ volume, 1 channel, DRUNet | 2 | 8×256×256 / 2×16×16, batch 4 | 1, 2, 4, 8, 16, 32, 64 |
+| <a href={trainingConfigHref("comm_time_2D.yml")}><code>comm_time_2D.yml</code></a> | Unrolled PnP (5 iterations), synthetic 4096², 3 channels, DRUNet | 4 | 512 / 32, batch 1, checkpointing on | 1, 2, 4, 8, 16, 32, 64 |
+| <a href={trainingConfigHref("comm_time_3D.yml")}><code>comm_time_3D.yml</code></a> | Unrolled PnP (1 iteration), synthetic 512³, 1 channel, DRUNet | 4 | 64³ / 8, batch 4, checkpointing on | 4, 8, 16, 32, 64 |
+
+Two details to read off that table before the figures. The **operator counts
+differ by configuration** — 8 and 2 for inference, 4 for both training runs —
+and that single number turns out to explain most of the wait behaviour below,
+so it is worth keeping in view. And **3D training starts at 4 GPUs**, not 1:
+its baseline in the scaled charts is its own 4-GPU run, so its bars are not
+directly comparable in absolute terms to the three configurations that start
+from a single GPU.
+
+**Metrics**, per the [POP methodology](https://pop-coe.eu/node/69):
+
+- `transfer` = the minimum kernel time across ranks — the last rank to arrive
+  waits for nobody, so its time is pure transfer.
+- `wait` = the average gap between that minimum and each rank's own raw time.
+- `compute` = the mean per-rank section time minus its own collective time.
+- `compute` + `transfer` + `wait` are additive — they sum exactly to the
+  section's CUDA time.
+- Per-section load balance: `LB = compute / compute_max`, where
+  `compute_max` is the critical-path (slowest) rank.
+- Combined load balance, summed across every section instead of one at a
+  time: `LB = sum(compute) / sum(compute_max)`.
+- Communication efficiency, summed the same way: `CommE = sum(compute_max) /
+  total_sec`, where `total_sec` is `cuda_sec` summed across every section.
+- `LB x CommE` is the overall parallel efficiency — the fraction of each
+  GPU-second spent on useful, balanced work.
+
+
+## How does communication cost grow, and what's driving it?
+
+Each bar below is scaled relative to the smallest GPU count tested, in
+GPU-seconds. The baseline bar is always
+1.0 by construction — perfect linear scaling would keep every bar at 1.0
+regardless of GPU count. A bar taller than 1.0 means that configuration spent
+more total GPU-seconds than ideal scaling would have, and the color split
+shows exactly how much of that excess is compute versus communication. The
+charts further down break that excess down again, into compute, transfer,
+and wait individually, in absolute seconds.
+
+<ResultChart
+  id="communication-share-inference"
+  title="Inference: compute vs communication cost, scaled to baseline"
+  description="Compute vs communication (transfer+wait) GPU-seconds per section, relative to the 1-GPU baseline."
+  values={commInferenceData.values}
+  spec={communicationShareInferenceSpec}
+  note="Configurations: comm_inference_2D.yml (2D), comm_inference_3D.yml (3D)."
+  tableColumns={[
+    { key: "section", label: "Section" },
+    { key: "dim", label: "Dim" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "scaledComputeSec", label: "Scaled compute", digits: 3 },
+    { key: "scaledCommSec", label: "Scaled comm", digits: 3 },
+  ]}
+/>
+
+<ResultChart
+  id="communication-share-training"
+  title="Training: compute vs communication cost, scaled to baseline"
+  description="Compute vs communication (transfer+wait) GPU-seconds per section, relative to the smallest-GPU-count baseline."
+  values={commTrainingData.values}
+  spec={communicationShareTrainingSpec}
+  note="Configurations: comm_time_2D.yml (2D), comm_time_3D.yml (3D). The 3D baseline is 4 GPUs, the smallest count that configuration runs."
+  tableColumns={[
+    { key: "section", label: "Section" },
+    { key: "dim", label: "Dim" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "scaledComputeSec", label: "Scaled compute", digits: 3 },
+    { key: "scaledCommSec", label: "Scaled comm", digits: 3 },
+  ]}
+/>
+
+The pattern is consistent across both charts: **3D scales better than 2D,
+and training scales better than inference.** By 64 GPUs, the combined cost
+sits at 1.08× ideal for training 3D, 1.12× for inference 3D, 1.91× for
+training 2D, and 2.22× for inference 2D — the gap between 3D and 2D (roughly
+2×) dwarfs the gap between training and inference (a few percent either
+way).
+
+**The reason is a race between compute and transfer.** The fair comparison
+here is `compute_max` against `transfer` alone, not against transfer+wait:
+`compute_max` is the critical-path rank's own compute, and that rank (by
+construction) has no wait of its own, so this comparison isn't muddied by
+idling — it's asking whether the best-case rank still has more real work to
+do than the unavoidable data it has to move. As GPU count grows, each GPU's
+share of compute shrinks, but transfer does not shrink at the same rate, so
+the two get closer together. 2D inference comes right to the edge of that
+crossover by 64 GPUs — combined critical-path compute (0.33s) is only 4%
+above combined transfer (0.32s) — without quite crossing it in the range
+tested. Training 2D keeps more distance (1.85s vs 1.13s, compute 64% above
+transfer). Both 3D cases stay solidly compute-bound (inference 3D: 2.79s vs
+0.21s, 13x; training 3D: 10.13s vs 0.66s, 15x) — the 3D problem is simply
+much larger, leaving far more compute to outrun transfer with. This is why
+2D inference is the closest of the four to becoming transfer-bound: its
+compute shrinks fastest of all, bringing it nearest to the point where
+transfer alone would exceed it.
+
+Splitting the total between sections, the **denoiser is the main
+contributor**: it makes up 98.5% of the 2D baseline and effectively all of
+the 3D baseline (99.99%), and its own cost only grows modestly by 64 GPUs
+(1.54× in 2D, 1.07× in 3D). The **physics gradient** starts from a tiny
+baseline share (1.5% in 2D, 0.01% in 3D) but grows far faster in relative
+terms — 47× its own baseline in 2D, 367× in 3D — making it the most
+communication-exposed section even though its absolute contribution stays
+small. Training's `forward` and `backward` sit between these two extremes
+(`forward` grows 2.49× in 2D vs 1.20× in 3D; `backward` grows 1.72× in 2D vs
+1.04× in 3D).
+
+To see exactly where that growth comes from — pure data transfer, or GPUs
+waiting on each other — the next figure breaks compute, transfer, and wait
+apart individually, in absolute seconds per section, 2D (solid) and 3D
+(dashed) overlaid on the same axes.
+
+<ResultChart
+  id="communication-absolute-inference"
+  title="Inference: what's driving the growth -- compute, transfer, or wait?"
+  description="Critical-path compute, transfer, and wait time per section vs GPU count, log scale. 2D and 3D overlaid on the same axes."
+  values={commInferenceData.values}
+  spec={communicationAbsoluteInferenceSpec}
+  note="compute_max is the slowest rank's own compute time (the critical path), not the mean. Together with transfer, it reconstructs the section's real wall-clock time exactly, since the critical-path rank has zero wait of its own -- unlike figure 1's segments, these three lines are independent diagnostics and do not sum to anything: wait here is the average idle time across all ranks (mostly the non-critical-path ones), not a third term on top of compute_max + transfer. Configurations: comm_inference_2D.yml (2D), comm_inference_3D.yml (3D)."
+  tableColumns={[
+    { key: "section", label: "Section" },
+    { key: "dim", label: "Dim" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "computeMaxSec", label: "Compute (critical path, s)", digits: 4 },
+    { key: "transferSec", label: "Transfer (s)", digits: 4 },
+    { key: "waitSec", label: "Wait (s)", digits: 4 },
+  ]}
+/>
+
+<ResultChart
+  id="communication-absolute-training"
+  title="Training: what's driving the growth -- compute, transfer, or wait?"
+  description="Critical-path compute, transfer, and wait time per section vs GPU count, log scale. 2D and 3D overlaid on the same axes."
+  values={commTrainingData.values}
+  spec={communicationAbsoluteTrainingSpec}
+  note="Configurations: comm_time_2D.yml (2D), comm_time_3D.yml (3D)."
+  tableColumns={[
+    { key: "section", label: "Section" },
+    { key: "dim", label: "Dim" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "computeMaxSec", label: "Compute (critical path, s)", digits: 4 },
+    { key: "transferSec", label: "Transfer (s)", digits: 4 },
+    { key: "waitSec", label: "Wait (s)", digits: 4 },
+  ]}
+/>
+
+- **Compute — denoiser vs. gradient.** The denoiser's compute keeps roughly
+  halving every time GPU count doubles, all the way to 64 GPUs (2D: 18.3s →
+  0.29s; 3D: 172s → 2.8s). The physics gradient does not: its compute
+  *plateaus* — 2D flattens at ~0.038s from 8 GPUs onward, 3D flattens at
+  ~0.013s from 2 GPUs onward, and stays there no matter how many more GPUs
+  are added. This isn't noise: the inference configs distribute a *fixed*
+  number of acquisition operators — 8 for 2D, 2 for 3D
+  (`comm_inference_2D.yml` / `comm_inference_3D.yml`) — each assigned whole
+  to one GPU. Once GPU count exceeds the operator count, the busiest GPU
+  still holds exactly one operator, so more GPUs beyond 8 (2D) / 2 (3D)
+  cannot shrink the critical-path compute any further.
+- **Compute — training's `forward`/`backward`.** Training distributes the
+  same fixed operator count too (4, for both 2D and 3D), so the same
+  plateau exists in principle — but `forward` and `backward` bundle physics
+  *and* the denoiser's model computation into one section, and the denoiser
+  dominates that total. Its larger, smoothly-scaling compute masks the
+  smaller physics-operator plateau underneath it, so neither section shows
+  a visible flattening here — both keep decreasing all the way to 64 GPUs.
+- **Transfer.** Grows with GPU count, in every section and dimensionality —
+  with one exception: 4 GPUs is consistently *lower* than 2 GPUs. We come
+  back to why in the bandwidth section below.
+- **Wait.** Generally a small percentage of compute — except for the
+  physics gradient, for the same reason as above: once GPU count exceeds
+  the operator count, some GPUs hold zero physics operators, finish
+  instantly, and sit idle in the collective until the others catch up.
+
+## Are the GPUs actually staying balanced?
+
+<ResultChart
+  id="communication-wait"
+  title="The physics gradient loses load balance well before any other section does"
+  description="Wait time as a percentage of compute time, all four sections overlaid, per GPU count. Values above 100% mean the GPUs spent more time waiting than computing. Symlog scale."
+  values={[...commInferenceData.values, ...commTrainingData.values]}
+  spec={communicationWaitSpec}
+  note="Wait/compute is a different question from the share chart above: a section can have most of its absolute time in transfer (real data movement) while also having a large wait share (rank skew) at the same time -- the two are not mutually exclusive. Configurations: all four (comm_inference_2D.yml, comm_inference_3D.yml, comm_time_2D.yml, comm_time_3D.yml)."
+  tableColumns={[
+    { key: "study", label: "Study" },
+    { key: "section", label: "Section" },
+    { key: "dim", label: "Dim" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "lbPct", label: "Load balance (%)", digits: 1 },
+    { key: "waitPct", label: "Wait / compute (%)", digits: 1 },
+  ]}
+/>
+
+The **denoiser** stays under 4% wait at every GPU count, in both
+dimensionalities. That means each GPU genuinely gets the same amount of tile
+work — the residual few percent is just timing noise between otherwise
+identical GPUs, not real imbalance.
+
+The **physics gradient** tells a completely different story, and it tracks
+the operator count exactly. In 2D (8 operators), wait stays under 3% through
+8 GPUs — one operator per GPU, perfectly balanced — then jumps to 83% at 16
+GPUs and keeps climbing to 302% at 64, because every GPU added past 8 has
+zero operators and nothing to do but wait. In 3D (2 operators), the same
+thing happens two steps earlier: wait is low at 2 GPUs (one operator each),
+then jumps to 54% by 4 GPUs, for the identical reason. 
+
+Training's `forward` and `backward` are a mix of both stories, because — as
+established earlier — they bundle physics and denoiser computation into one
+section. When the denoiser dominates (3D, at any GPU count tested; 2D, at low
+GPU counts), wait stays small, tracking the denoiser's behavior. Once the
+physics portion becomes a larger share of the work (2D, at higher GPU
+counts), wait grows and lands *between* the pure-gradient and pure-denoiser
+curves — `forward` reaches 38% and `backward` 17% at 64 GPUs in 2D, well
+below gradient's 302% but well above denoiser's 3%.
+
+Per-section wait tells you *where* imbalance shows up; **load balance (LB)**
+below restates it as an efficiency, and puts each section's own LB (solid)
+next to the value summed across every section (dashed) on the same axis — so
+the gap between the worst section and the number you would quote for the run
+as a whole is directly visible.
+
+<ResultChart
+  id="communication-lb"
+  title="Combined load balance stays high -- the physics gradient's does not"
+  description="Load balance (LB) vs GPU count. Solid lines are inference's denoiser and gradient, each on its own LB; dashed lines are the combined value per study."
+  values={[...commInferenceData.values, ...commTrainingData.values]}
+  spec={communicationLbSpec}
+  note="Section LB = compute / compute_max for that section alone. Combined LB = sum(compute) / sum(compute_max), where both sums add across every section first (denoiser+gradient, or forward+backward) before the ratio is taken -- it is a weighted average, not the mean of the solid lines, which is why it can sit far above the worst section. Only inference's sections are drawn individually: training's forward and backward stay close to each other, so its combined line stands in for both. Per-section values for all four sections are in the table below. Configurations: all four (comm_inference_2D.yml, comm_inference_3D.yml, comm_time_2D.yml, comm_time_3D.yml)."
+  tableColumns={[
+    { key: "study", label: "Study" },
+    { key: "section", label: "Section" },
+    { key: "dim", label: "Dim" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "lbPct", label: "Section LB (%)", digits: 1 },
+    { key: "lbCombinedPct", label: "Combined LB (%)", digits: 1 },
+  ]}
+/>
+
+By 64 GPUs, combined load balance stays relatively high everywhere (86–97%) —
+even 2D inference, the worst performer overall, keeps 89%. That might look
+surprising given the physics gradient's own load balance collapses to 27%
+(2D) / 37% (3D) at 64 GPUs, the lowest solid line on the chart — but combined
+LB is a weighted
+average (`sum(compute) / sum(compute_max)`), and by 64 GPUs the gradient is
+still only 11% of the combined `compute_max` in 2D, and just 0.5% in 3D. Even
+at that weight, an 11% share pulls the near-perfect denoiser figure (97%)
+down to 89% — visible, but nowhere near as severe as the gradient's own 27%
+would suggest in isolation.
+
+## How much of the critical path is communication — and does it check out?
+
+Communication efficiency asks a different question from load balance above.
+Load balance is about *imbalance* between GPUs — mainly a `wait`, mainly-
+`gradient` story, as just shown. CommE instead asks: even on a perfectly
+balanced system, how much of the critical path would still be spent moving
+data rather than computing? This isolates the transfer-driven cost of
+scaling, which is a separate mechanism from imbalance.
+
+<ResultChart
+  id="communication-comme"
+  title="Communication efficiency drops far more than load balance does"
+  description="Communication efficiency (CommE) vs GPU count. Solid lines are inference's denoiser and gradient, each on its own CommE; dashed lines are the combined value per study."
+  values={[...commInferenceData.values, ...commTrainingData.values]}
+  spec={communicationCommESpec}
+  note="Section CommE = compute_max / cuda_sec for that section alone. Combined CommE = sum(compute_max) / total_sec, where compute_max is summed across every section first (denoiser+gradient, or forward+backward) and total_sec is cuda_sec summed the same way -- one value per GPU count. As with load balance, only inference's sections are drawn individually; training's combined line stands in for its two, and per-section values for all four are in the table below. LB x CommE = parallel efficiency -- consistent with (though not identical to, since it's a different formula) the 1/scale figures in the first chart on this page. Configurations: all four (comm_inference_2D.yml, comm_inference_3D.yml, comm_time_2D.yml, comm_time_3D.yml)."
+  tableColumns={[
+    { key: "study", label: "Study" },
+    { key: "section", label: "Section" },
+    { key: "dim", label: "Dim" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "commEPctSection", label: "Section CommE (%)", digits: 1 },
+    { key: "commEPct", label: "Combined CommE (%)", digits: 1 },
+  ]}
+/>
+
+Communication efficiency drops much further than load balance does: it falls
+to 51% for 2D inference and 60% for 2D training, versus 93–94% for both 3D
+cases. Split by section, the same ordering as load balance holds — at 64 GPUs
+the denoiser keeps 66% in 2D and 96% in 3D, while the gradient is down to 18%
+and 10% — but note the denoiser's own CommE falls a long way in 2D even though
+its 2D load balance never left 97%: this is a different problem from imbalance,
+and the next paragraph is about why. By 64 GPUs, 2D inference's critical-path compute (0.33s) is nearly
+matched by transfer alone (0.32s); 2D training still has more room (1.85s vs
+1.13s). Neither 3D case comes close: 2.79s compute vs 0.21s transfer for
+inference, 10.13s vs 0.66s for training — compute stays far larger because
+the 3D problem itself is much bigger.
+
+This is a genuinely different mechanism from the gradient's load-balance
+problem, not a restatement of it: summed across every section, transfer —
+not wait — is the majority of the non-compute time (89% for 2D inference,
+76% for 2D training; even 3D, where CommE barely drops, is 64–69% transfer).
+The CommE drop is a data-movement story, concentrated in the dominant
+denoiser/backward sections, which stay well balanced but still have to move
+more data relative to their shrinking compute as GPU count grows. The
+gradient's load-balance collapse, from the wait chart earlier, is a separate
+problem in a separate
+(small) section — both are real, but they are not the same thing, and fixing
+one would not fix the other.
+
+### Does `transfer` really measure data movement?
+
+The story above rests on `transfer` being real data movement, and not
+leftover skew slipping through the min-reduction. There is a simple way to
+check: work out how fast the data appears to be moving, then ask whether a
+real cable could actually go that fast.
+
+Speed is bytes divided by time. The time is measured. The bytes take a
+little care.
+
+Each `all_reduce` shares one image across all the GPUs. That image is the
+`payload`: `8192 x 8192 x 3 channels x 4 bytes ≈ 805 MB` for 2D inference,
+and `512³ x 4 bytes ≈ 537 MB` for 3D. But no GPU ever sends the whole
+805 MB. A ring `all_reduce` cuts the payload into one piece per GPU and
+passes the pieces around the circle twice — once to add them up, once to
+hand the finished result back out. So each GPU moves a little under two
+payloads' worth:
+
+```
+bytes moved = 2 x payload x (gpus - 1) / gpus
+bandwidth   = bytes moved / transfer time
+```
+
+This is exact for inference, where `denoiser` and `gradient` each fire one
+`all_reduce` per iteration; training's sections mix in other messages the
+formula cannot count, so the chart below is inference only.
+
+<ResultChart
+  id="communication-bandwidth"
+  title="Measured bandwidth stays under the hardware limit at every size"
+  description="Transfer time and implied bandwidth vs GPU count, inference's denoiser and gradient sections -- the cases where the collective count is exactly known."
+  values={commInferenceData.values}
+  spec={communicationBandwidthSpec}
+  note="Implied bandwidth = bytes moved by the ring all-reduce / measured transfer time. 4 GPUs/node, so 4 GPUs stay on a single node (NVLink-class interconnect) and 8+ GPUs span multiple nodes (cluster network). Configurations: comm_inference_2D.yml (2D), comm_inference_3D.yml (3D)."
+  tableColumns={[
+    { key: "section", label: "Section" },
+    { key: "dim", label: "Dim" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "nodeCount", label: "Nodes", digits: 0 },
+    { key: "bandwidthGBs", label: "Bandwidth (GB/s)", digits: 1 },
+  ]}
+/>
+
+The measured bandwidth is about 40 GB/s at 2 GPUs, 120 GB/s at 4, then 29
+GB/s at 8 and 10 GB/s from 16 GPUs on. The drop after 4 GPUs is no surprise:
+a node holds only 4 GPUs, so beyond that the data has to cross between
+machines, and the network is far slower than the cables inside a node.
+
+The question is whether those numbers are physically possible. Two kinds of
+cable set the limits. Inside a node, each V100 has 6 NVLink cables at
+25 GB/s each — 50 GB/s towards any one partner, 150 GB/s if all six are in
+use. Between nodes, each machine has 4
+[network cables](http://archive.idris.fr/eng/jean-zay/cpu/jean-zay-cpu-hw-eng.html)
+at 100 Gb/s, so 50 GB/s can leave a machine, whatever it is sending and
+wherever it is going.
+
+These are ceilings, not targets. A ceiling says what the hardware makes
+*impossible*, so a measurement below one is fine and a measurement above one
+would mean the metric is broken:
+
+| GPUs  | Measured | Ceiling                              | Share |
+| ----- | -------- | ------------------------------------ | ----- |
+| 2     | 40 GB/s  | 50 GB/s — 2 NVLink cables to a partner | 80% |
+| 4     | 120 GB/s | 150 GB/s — all 6 NVLink cables per GPU | 80% |
+| 8     | 29 GB/s  | 50 GB/s — a machine's network          | 58% |
+| 16–64 | 10 GB/s  | 50 GB/s — a machine's network          | 20% |
+
+Nothing exceeds its ceiling, so nothing impossible is being claimed. On a
+single node the evidence is stronger than that: 2 and 4 GPUs both reach 80%
+of a tight limit, the usual efficiency of a real collective. The multi-node
+rows sit well under a much looser limit, so they confirm less — a machine's
+total network capacity is an upper bound for *any* algorithm, and saying how
+close a ring should get to it would mean working out which cables the ring
+actually uses, which these measurements do not observe.
+
+The sharpest evidence is a prediction rather than a comparison. Going from
+2 to 4 GPUs puts 6 NVLink cables to work instead of 2, so the bandwidth
+should triple — and the measured ratio is 2.97 to 3.07 across all four
+series. A number that follows the cable count that exactly is measuring
+cables. Had `transfer` been quietly counting GPUs waiting on each other, it
+would have had no reason to. `transfer` really is transfer.
+
+
+## Conclusions
+
+**"Communication" is not one thing, and this study is a clean illustration of
+why that distinction matters.** Splitting it into transfer and wait exposes
+two different failure modes, each with its own remedy — and this study finds
+a clear example of each, playing out in different sections.
+
+**On the wait side, the lesson is that scaling holds up exactly where work is
+divided evenly across GPUs, and breaks down exactly where it isn't.** The
+physics gradient distributes a *fixed* number of acquisition operators, one
+whole operator to a GPU — 8 in 2D, 2 in 3D — so once GPU count passes that
+number, every extra GPU gets zero operators and nothing to do but idle: by 64
+GPUs its wait time is three times its compute time, in both 2D and 3D, and
+its own load balance collapses to 27% (2D) / 37% (3D). That ceiling is a
+property of *this* physics problem having only a handful of operators to
+divide, not a general communication limit — a physics operator that
+decomposes more finely (tomography's per-angle or per-slice split, for
+instance) would not hit the same wall at these GPU counts. The denoiser is
+the counterexample inside this same study: its patch-based split can cut the
+image into as many pieces as there are GPUs, keeping every GPU's share
+essentially equal, which is exactly why its own load balance never drops
+below 96.6% and wait never exceeds 4% of its compute time at every GPU count
+tested here.
+
+**On the transfer side, though, being well balanced isn't enough.** More GPUs
+means less compute per GPU, but the data that has to move doesn't shrink at
+the same rate — so transfer eats a growing share of the critical path
+regardless of balance. Summed across every section, transfer — not wait — is
+already the majority of the non-compute time by 64 GPUs (89% for 2D
+inference, 76% for 2D training; 64–69% even in 3D). That's why communication
+efficiency drops much further than load balance does in 2D, down to 51% for
+inference and 60% for training — a separate, data-movement mechanism from the
+gradient's wait problem above, one rebalancing can't fix. What does help is
+more compute per GPU to hide the same transfer behind — exactly why the
+bigger 3D problem stays compute-dominated at every GPU count tested while 2D
+does not.
+
+**Put together, these two mechanisms are why 2D pays roughly double the
+ideal GPU-seconds cost that perfect linear scaling would by 64 GPUs (2.22×
+for inference, 1.91× for training), while 3D stays close to ideal (1.12× and
+1.08×) — and in every one of these four cases, the compute portion itself
+barely moves (0.97–1.01×).** Communication, in one form or the other, is
+responsible for essentially all of the gap between measured and ideal
+scaling.
+

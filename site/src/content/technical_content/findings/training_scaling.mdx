@@ -1,0 +1,431 @@
+---
+title: "Training at scale: the memory wall comes first"
+description: "Why large-scale training is bounded by memory rather than compute, what activation checkpointing buys, and how the resulting runs scale across GPUs."
+eyebrow: "Training scaling"
+featured: true
+pageType: "article"
+landingSection: "findings"
+---
+
+import ResultChart from "../../../components/results/ResultChart.astro";
+import strongScalingData from "../../../data/results/training_scaling/strong-scaling.json";
+import weakScalingData from "../../../data/results/training_scaling/weak-scaling.json";
+import checkpointingData from "../../../data/results/training_scaling/checkpointing.json";
+import batchSizeData from "../../../data/results/training_scaling/batch-size.json";
+import {
+strongScalingSpec,
+weakScalingSpec,
+weakScalingMemorySpec,
+checkpointingMemorySpec,
+batchSizeEfficiencySpec,
+batchSizeMemorySpec,
+} from "../../../lib/results/trainingScalingCharts";
+
+export const commHref = `${import.meta.env.BASE_URL}findings/communication/`;
+
+export const repo = "https://github.com/numpex/benchmark_invprob_largescale/blob/main/";
+export const configHref = (name) =>
+  `${repo}benchmark_training/configs/experiments/${name}`;
+
+<p class="lead">
+  Training a reconstruction model on large-scale data does not usually fail
+  because the machine is too slow. It fails because the backward pass needs the
+  forward pass's intermediate tensors, and those tensors are sized by the
+  <strong>data</strong> — a multi-megapixel image, a 3D volume — not by the
+  network. This page starts where the problem starts: with the run not fitting
+  at all, and with what has to be true before any scaling question is even
+  worth asking.
+</p>
+
+## The wall is set by the data, not the model
+
+The intuition that memory is a function of model size is the wrong one here.
+Every layer of a network applied to a volume produces a feature map with as
+many spatial positions as the volume itself, and autograd keeps those alive
+from the forward pass until the backward pass has consumed them. Make the
+network bigger and you add more such tensors; make the *data* bigger and every
+one of them grows at once.
+
+That is why a 3D volume can defeat a small network. A single 512×512×512
+float32 volume is 537 MB before anything has been computed on it, and a
+handful of feature maps at that resolution exhausts a card that would train
+the same network on natural images without noticing. The measurements on this
+page are 2D, but they are already in that regime: at 8192×8192 with three
+channels, one full-resolution float32 tensor is 805 MB, and the graph holds
+many of them at once.
+
+Two things then act as multipliers on top of that base:
+
+- **Model size.** A deeper or wider network means more feature maps per
+  forward pass, each one already large because the data is large.
+- **Unrolling.** An unrolled solver runs the whole forward pass once per
+  unrolled iteration and differentiates through all of them, so the resident
+  footprint scales with the iteration count. Everything below uses DRUNet with
+  **five** unrolled iterations, which multiplies the base cost fivefold.
+
+The runs on this page are 2D images from 1024×1024 to 8192×8192, on Tesla
+V100-SXM2 cards with **32 GB** of memory, four per node. The solver is DRUNet
+with five unrolled iterations, applied to overlapping patches distributed
+across ranks. Times are the mean per-step forward + backward time; memory is
+the peak per-GPU allocation reported by the profiler.
+
+Three benchmark configurations produce everything below, one per lever. They
+all live in `benchmark_training/configs/experiments/`, and each figure on this
+page names the one it came from:
+
+| Configuration | Image | Patch / halo | What it sweeps | Sections |
+|---|---|---|---|---|
+| <a href={configHref("checkpointing.yml")}><code>checkpointing.yml</code></a> | 2048² | 512 / 32 | `max_batch_size` 1, 2, 4 at 1 and 4 GPUs; `checkpoint_batches` `always` vs `never` at 16 | Checkpointing |
+| <a href={configHref("batch_size.yml")}><code>batch_size.yml</code></a> | 4096² | 256 / 16 | `max_batch_size` 1, 2, 4, 8, 16, over 1, 4, and 16 GPUs | `max_batch_size` |
+| <a href={configHref("strong_scaling.yml")}><code>strong_scaling.yml</code></a> | 1024², 4096², 8192² | 512 / 32 | GPU count from 1 to 64, per image size | Strong scaling, weak scaling |
+
+Two details worth reading off that table before the figures. The last
+configuration carries both scaling sections: its grid sweeps image size and GPU
+count together, so the weak-scaling ladders fall out of it without a separate
+run. And the batch-size sweep uses a smaller patch (256 with a 16-pixel halo)
+than the other two, which is why its absolute memory figures are not directly
+comparable to theirs — within that experiment every point shares the setting,
+so the trend it reports is sound, but do not read its megabytes against the
+checkpointing chart's.
+
+## Checkpointing: what makes the run exist at all
+
+The first lever is not a performance tuning knob. Activation checkpointing
+discards the forward pass's intermediate tensors and recomputes them when the
+backward pass asks for them: you pay compute to stop paying memory.
+
+In this codebase the trade is made at the granularity of a **patch-batch**. A
+distributed block splits a rank's share of the image into patches, groups them
+into batches, and a batch's forward pass through the denoiser can be wrapped so
+that its internal activations are dropped and regenerated on demand.
+
+Whether that wrapping happens is decided once per block, before any batch is
+processed, and it applies to all of them or none. The decision has a
+precondition and then three modes:
+
+- **The precondition:** gradients must actually be being tracked. In a no-grad
+  pass there is no backward pass to feed, so nothing is checkpointed whatever
+  the mode says — including `always`.
+- **`always`** wraps every batch.
+- **`never`** wraps none, and keeps all activations resident.
+- **`auto`** wraps every batch *if the rank ends up with more than one batch*,
+  and otherwise behaves like `never`.
+
+That last one deserves care, because the number of batches is not a property of
+how the work was divided — it is `ceil(patches ÷ max_batch_size)`. So `auto`
+turns **itself off** as soon as `max_batch_size` is large enough to hold a
+rank's entire patch list in a single batch. Raising that setting under `auto`
+therefore does two costly things at once: it enlarges the block that must stay
+resident, and past a threshold it also stops checkpointing from happening at
+all. Every experiment on this page sets `always` explicitly, which sidesteps
+the interaction entirely.
+
+<ResultChart
+  id="training-checkpointing-memory"
+  title="Turning checkpointing off triples the footprint — where it fits at all"
+  description="Peak per-GPU memory with and without checkpointing, at max_batch_size 1 on a 2048x2048 problem."
+  values={checkpointingData.values}
+  spec={checkpointingMemorySpec}
+  note="The two missing 'never' bars are not gaps in the sweep. Those configurations were not run because they do not fit in the 32 GB budget — a smaller machine holds a larger share of the patch grid per rank, so the un-checkpointed footprint grows exactly where there is less memory to absorb it. The entries carry no measured numbers, only the reason they are absent. Configuration: checkpointing.yml."
+  tableColumns={[
+    { key: "checkpointMode", label: "Checkpointing" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "maxBatchSize", label: "Max batch", digits: 0 },
+    { key: "peakMemoryMb", label: "Peak memory (MiB)", digits: 0 },
+    { key: "forwardPeakMemoryMb", label: "Forward peak (MiB)", digits: 0 },
+    { key: "timeSec", label: "Step time (s)", digits: 3 },
+    { key: "status", label: "Status" },
+  ]}
+/>
+
+**The two missing bars are the headline.** There is no `never` measurement at 1
+or 4 GPUs because those runs do not fit in 32 GB. Fewer GPUs means each rank
+owns a larger share of the patch grid, so the un-checkpointed footprint is
+largest exactly where there is least memory to hold it. Checkpointing is not
+something you switch on to go faster; below a certain amount of hardware it is
+the only reason there is a run to measure.
+
+At the one configuration where both settings fit — 16 GPUs, `max_batch_size` 1
+— the trade can be priced. That configuration is worth pausing on, because it
+is the cleanest form of the comparison available. A 2048×2048 image tiled into
+512-pixel patches gives exactly **16 patches**, so on 16 GPUs every rank holds
+precisely one, and with `max_batch_size` 1 that single patch is a single batch.
+The checkpoint boundary therefore falls around one denoiser call per
+distributed block per unrolled iteration — which is to say, at this point
+patch-batch checkpointing *is* ordinary per-layer checkpointing of the unrolled
+network, with none of the patch-grouping subtleties of the previous section
+mixed in. What the table below prices is the textbook trade:
+
+| | peak memory | forward-resident peak | step time |
+|---|---|---|---|
+| `never` | 15,329 MiB | 14,978 MiB | 1.556 s |
+| `always` | 4,674 MiB | 2,001 MiB | 1.907 s |
+| | **−70%** | **−87%** | **+23%** |
+
+The forward column is where the mechanism shows. Checkpointing removes almost
+all of the memory the forward pass was holding on behalf of the backward pass
+— 15.0 GB down to 2.0 GB. The backward peak falls by less, because the
+recomputation still has to materialize one batch's activations at a time.
+
+Read as a recommendation, that row argues *against* checkpointing: at 16 GPUs
+`never` both fits inside the card and finishes faster, so switching it on there
+would cost 23% for memory you were not short of. That is the general rule —
+checkpointing is worth its price only once you are actually out of room. What
+makes it non-negotiable here is everything to the left of that row, where you
+are.
+
+**Everything else on this page runs with `checkpoint_batches: always`.** Not as
+a default nobody revisited, but because the alternative does not fit on the
+hardware the rest of these experiments use. Every scaling curve further down
+should be read as *"given that the run is only possible with checkpointing,
+how does it then behave?"*
+
+## `max_batch_size`: sizing the unit you don't store
+
+Checkpointing has one parameter that matters, and it is not called
+checkpointing. Because the checkpointed unit is the patch-batch,
+`max_batch_size` decides how much still has to be resident even with the
+feature on. Raising it also gives the GPU more work per kernel launch, which
+helps utilization — so the two effects pull against each other.
+
+This setting is easy to misread, so it is worth walking through slowly, because
+`max_batch_size` does not mean here what "batch size" usually means in
+training.
+
+In ordinary training, raising the batch size means feeding the network *more
+data* per step — 32 images instead of 8. Here it does not. The work of a step
+is decided long before the batch setting is consulted: the image is cut into a
+grid of overlapping patches, that grid is fixed by the image size and the patch
+size, and the patches are divided among the ranks. By the time
+`max_batch_size` is read, each rank is already holding a fixed list of patches
+it must process.
+
+What the setting decides is only how that fixed list is **chopped into
+calls**. Say a rank is holding 12 patches:
+
+| `max_batch_size` | calls to the denoiser | tensor batch dimension | patches processed |
+|---|---|---|---|
+| 1 | 12 | 1 each | 12 |
+| 2 | 6 | 2 each | 12 |
+| 4 | 3 | 4 each | 12 |
+| 16 | 1 | 12 (capped by what the rank holds) | 12 |
+
+So yes — the batch dimension of the tensor really does grow, from 1 to 4. That
+part is exactly what it looks like. But the last column never moves: the same
+12 patches are processed either way, in 3 calls of 4 instead of 12 calls of 1.
+The GPU does the same total work; it is just handed that work in fewer, fatter
+pieces.
+
+That is why this is a **utilization** knob rather than a throughput knob. Fewer
+and larger calls keep the GPU busier per launch, which is where the time saving
+comes from — and a fatter piece is also a bigger thing to hold in memory, which
+is where the cost comes from. That second half is what the figures below
+measure: `max_batch_size` sets the size of the checkpointed segment, so it
+decides how much memory checkpointing still has to keep resident.
+
+
+<ResultChart
+  id="training-batch-size"
+  title="Larger batches are faster at every GPU count"
+  description="Parallel efficiency against GPU count, one line per max_batch_size. Every series is normalized to one shared baseline — max_batch_size 16 on a single GPU — so the curves are comparable in absolute terms, not only within a series."
+  values={batchSizeData.values}
+  spec={batchSizeEfficiencySpec}
+  note="4096x4096 with checkpointing on throughout. A single baseline is used for all series on purpose: normalizing each GPU count against its own batch-1 run would force every curve to start at the same point and hide the difference between batch sizes. Configuration: batch_size.yml."
+  tableColumns={[
+    { key: "maxBatchSize", label: "Max batch", digits: 0 },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "timeSec", label: "Step time (s)", digits: 2 },
+    { key: "efficiencyPct", label: "Efficiency (%)", digits: 1 },
+    { key: "peakMemoryGb", label: "Peak memory (GB)", digits: 1 },
+  ]}
+/>
+
+The ordering is unambiguous and it holds at every scale: **batch 16 is the best
+setting on every machine size measured**, and the gap to batch 1 is 21.5
+efficiency points on 1 GPU, 12.4 on 4, and 13.1 on 16. In time that is 21.5%,
+13.7%, and 16.3% faster. This is not a marginal effect — it is the same order
+as what checkpointing costs.
+
+
+Then the price:
+
+<ResultChart
+  id="training-batch-size-memory"
+  title="And the memory they cost, in absolute terms"
+  description="Peak per-GPU memory for the same runs, in gigabytes rather than as a percentage change, so each setting's actual cost against the 32 GB card is readable directly."
+  values={batchSizeData.values}
+  spec={batchSizeMemorySpec}
+  note="Same runs as the previous figure. The dashed line is the 32 GB per-GPU capacity of a V100. Configuration: batch_size.yml."
+  tableColumns={[
+    { key: "maxBatchSize", label: "Max batch", digits: 0 },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "peakMemoryGb", label: "Peak memory (GB)", digits: 1 },
+    { key: "forwardPeakMemoryMb", label: "Forward peak (MiB)", digits: 0 },
+  ]}
+/>
+
+Batch 16 costs 2.9× the memory of batch 1 on 16 GPUs (5.9 → 17.0 GB) and 1.9×
+on one (12.0 → 23.1 GB), and on a single GPU it lands at 23.1 GB of a 32 GB
+card — the fastest setting is also the one closest to not fitting.
+
+That is the trade in its proper shape. The reason larger batches are faster is
+the same reason they cost more: fewer, fatter calls. A rank's patches go through
+the denoiser in `ceil(patches ÷ max_batch_size)` calls, and each of those calls
+is a checkpointed segment that the backward pass has to replay. Raising the
+setting cuts the number of segments, so both the forward pass and its
+recomputation run as fewer, larger launches — and the block that has to stay
+resident grows to match.
+
+
+## Strong scaling: fixed problem, more GPUs
+
+Now that the run is possible, the ordinary question. Hold the image fixed and
+add GPUs: each rank gets fewer patches, the step gets faster, and the peak
+memory per rank comes down with it.
+
+<ResultChart
+  id="training-strong-scaling"
+  title="Efficiency holds while each GPU still has work to do"
+  description="Parallel efficiency of the per-step forward + backward time, one line per image size, normalized to the smallest-GPU run of that size."
+  values={strongScalingData.values}
+  spec={strongScalingSpec}
+  note="Every run here uses checkpointing and max_batch_size 1 — without checkpointing most of these configurations would not fit. The 8192x8192 curve starts at 4 GPUs because a single GPU cannot hold that problem even with checkpointing on; its efficiency is therefore measured against its own 4-GPU run, not against 1 GPU. Configuration: strong_scaling.yml."
+  tableColumns={[
+    { key: "imageSize", label: "Image size" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "timeSec", label: "Step time (s)", digits: 2 },
+    { key: "speedup", label: "Speedup", digits: 2 },
+    { key: "efficiencyPct", label: "Efficiency (%)", digits: 1 },
+    { key: "peakMemoryMb", label: "Peak memory (MiB)", digits: 0 },
+  ]}
+/>
+
+The shape is the same at every problem size, only shifted. At 4096×4096,
+efficiency is essentially perfect out to 4 GPUs (99.9%), still 95.4% at 8, and
+83.9% at 16. At 8192×8192 the run starts at 4 GPUs and holds 96.2% at 8, 82.4%
+at 16, 72.1% at 32, and 55.1% at 64. The smallest problem falls off earliest in
+absolute terms — 1024×1024 is already down to 93.8% at 4 GPUs — because there
+is so little work per rank to begin with.
+
+
+That aside, this is the whole story of strong scaling: it works until the
+per-GPU share of the work becomes small enough that the fixed cost of keeping
+the ranks consistent stops being amortized. **What that fixed cost is made of —
+how much is real data transfer and how much is ranks idling on each other — is
+the subject of <a href={commHref}>the communication page</a>**, and it is the
+right place to go when a curve like the 8192×8192 one starts to bend.
+
+## Weak scaling: grow the problem with the machine
+
+Weak scaling asks the question that matters when memory is the binding
+constraint: not "how much faster does the same problem get", but "how much
+bigger a problem can I reach". Hold the work per GPU fixed and grow the image
+and the machine together. If the system scaled perfectly, the step time would
+not change at all.
+
+These are not a separate experiment. The strong-scaling grid sweeps three image
+sizes over overlapping GPU counts, so runs that happen to share the same
+megapixels-per-GPU already form weak-scaling ladders — 4096×4096 on 4 GPUs and
+8192×8192 on 16 GPUs are the same 4.19 Mpix per rank — and the chart below
+groups them out of the same parquet.
+
+<ResultChart
+  id="training-weak-scaling"
+  title="Weak scaling holds when each GPU is busy, and collapses when it isn't"
+  description="Each line keeps megapixels-per-GPU fixed while growing both the image and the machine. A flat line at 100% would be perfect weak scaling."
+  values={weakScalingData.values}
+  spec={weakScalingSpec}
+  note="Ladders are runs from the strong-scaling parquet whose megapixels-per-GPU agree to two decimals; a ladder needs at least two points to appear. Each is normalized to its own smallest-GPU run. Checkpointing is on throughout. Configuration: strong_scaling.yml."
+  tableColumns={[
+    { key: "localWorkloadMpix", label: "Mpix / GPU", digits: 2 },
+    { key: "imageSize", label: "Image size" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "timeSec", label: "Step time (s)", digits: 2 },
+    { key: "efficiencyPct", label: "Efficiency (%)", digits: 1 },
+    { key: "peakMemoryMb", label: "Peak memory (MiB)", digits: 0 },
+  ]}
+/>
+
+The ordering is monotone and it is the point of the figure. At 16.78 Mpix per
+GPU — each rank loaded up — going from 1 GPU to 4 costs 2.5% (97.5%
+efficiency). At 8.39 Mpix per GPU it is 92.8%, at 4.19 it is 80.4%, at 2.10 it
+is 73.7%. The thinnest ladder, 1.05 Mpix per GPU, still manages 82.9% at 16
+GPUs but only 53.1% at 64.
+
+Read together with strong scaling, this says something practical: the machine
+is not the limit, the *per-GPU workload* is. A 64-GPU run is efficient if you
+give it an image big enough to keep every rank fed, and wasteful if you don't.
+
+### The ceiling neither lever removes
+
+Split a job across more GPUs and you expect each one to hold less. Some of this
+memory behaves that way. Some does not — and that part decides how far any of
+this can go.
+
+<ResultChart
+  id="training-weak-scaling-memory"
+  title="Same work per GPU, more memory per GPU"
+  description="Peak per-GPU memory along the same weak-scaling ladders. Every point on a line gives each GPU the same amount of work, so a flat line would mean the footprint is fully distributed."
+  values={weakScalingData.values}
+  spec={weakScalingMemorySpec}
+  note="Same runs as the previous figure, with checkpointing on. The dashed line is the 32 GB per-GPU capacity of a V100. Configuration: strong_scaling.yml."
+  tableColumns={[
+    { key: "localWorkloadMpix", label: "Mpix / GPU", digits: 2 },
+    { key: "imageSize", label: "Image size" },
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "peakMemoryGb", label: "Peak memory (GB)", digits: 1 },
+  ]}
+/>
+
+Every line here holds the work per GPU fixed. They should be flat. Instead the
+1.05 Mpix-per-GPU line climbs from 4.3 GB on 1 GPU to 8.7 on 16 to 23.9 on 64,
+while each rank does exactly the same amount of work throughout.
+
+The reason is that a rank cannot only hold its own share. At the end of each
+distributed block, every rank writes its finished patches into a tensor the
+size of the **whole** image, so that the ranks can be combined — and the
+backward pass keeps one of those per unrolled iteration. Ten ranks means ten
+full-size copies, not one copy split ten ways.
+
+So the footprint has two halves:
+
+- **Your share** — a rank's own patches and their activations. Checkpointing
+  shrinks it, more GPUs divide it.
+- **The whole image** — replicated on every rank. Neither lever touches it.
+
+Adding hardware only ever shrinks the first half. At 8192×8192, going from 4
+GPUs to 64 — sixteen times the hardware — takes peak memory from 25.3 GB down
+to just 23.9 GB, because almost all of what is left is the second half.
+
+And the second half grows with the image. So it, not the GPU count, is what
+decides the largest image you can train: at 8192×8192 it already fills 23.9 GB
+of a 32 GB card, and the 8 GB still free is all the room there is to grow into.
+Buying more GPUs does not add to it.
+
+## What to actually do
+
+1. **Ask whether a step fits before asking how fast it is.** On large-scale
+   data, memory is the binding constraint far more often than compute.
+   Throughput is a question you earn the right to ask second.
+2. **Use checkpointing only when you need it.** It is a trade, not an
+   improvement: you spend time to buy memory. If the run already fits, turn it
+   off and keep the speed. Turn it on when the data grows, the model grows, or
+   the hardware shrinks to the point where it no longer fits — at which stage
+   it stops being an optimization and becomes the reason the run exists.
+3. **Raise `max_batch_size` until memory objects.** Larger batches mean fewer,
+   larger calls to the network, which is where the speedup comes from — and a
+   larger block resident at once, which is where the cost comes from. Push it
+   up while you have headroom and back off when you don't. A value that barely
+   reduces the number of calls buys nothing and still costs memory.
+4. **Add GPUs while each one still has work.** Efficiency tracks the workload
+   per GPU, not the GPU count. A large machine is efficient on a problem big
+   enough to keep every rank fed and wasteful on one that isn't.
+5. **When efficiency bends, find out why before adding hardware.** Scaling
+   curves decay for reasons that live in the collectives — read
+   <a href={commHref}>the communication page</a> to tell whether you are paying
+   for data movement or for ranks waiting on each other, because the two have
+   different fixes.
+6. **Know which part of your footprint neither lever can reach.** Whatever is
+   replicated on every rank rather than divided between them survives both
+   checkpointing and more hardware. That part sets the real ceiling on problem
+   size, and it is the one worth attacking next.

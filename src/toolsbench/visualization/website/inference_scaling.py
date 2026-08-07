@@ -6,13 +6,10 @@ calculations live here. The Astro site only maps fields to visual channels.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from toolsbench.visualization.common import (
@@ -22,8 +19,14 @@ from toolsbench.visualization.common import (
     load_results,
     summarize_configs,
 )
+from toolsbench.visualization.website.common import (
+    SCHEMA_VERSION,
+    finite,
+    number,
+    provenance as _provenance,
+    write_json as _write_json,
+)
 
-SCHEMA_VERSION = 1
 FINDING_ID = "inference_scaling"
 SCALING_CONFIG = "benchmark_inference/configs/experiments/strong_scaling_inference.yml"
 COMMUNICATION_REQUIRED_COLUMNS = {
@@ -110,7 +113,7 @@ def _validate_scaling_recipe(summary: pd.DataFrame) -> None:
             "filter the parquet explicitly before exporting."
         )
     actual = tuple(int(configurations.iloc[0][column]) for column in recipe_columns)
-    expected = (448, 32, 32)
+    expected = (512, 32, 4)
     if actual != expected:
         raise ValueError(f"Expected patch/overlap/batch {expected}, found {actual}")
 
@@ -120,9 +123,9 @@ def _timing_breakdown_payload(
 ) -> dict[str, Any]:
     values = []
     for _, row in summary.sort_values(["p_dataset_image_size", "n_gpus"]).iterrows():
-        physics = _finite(row["avg_gradient_time_sec"])
-        denoising = _finite(row["avg_denoise_time_sec"])
-        total = _finite(row["avg_total_time_sec"])
+        physics = finite(row["avg_gradient_time_sec"])
+        denoising = finite(row["avg_denoise_time_sec"])
+        total = finite(row["avg_total_time_sec"])
         values.append(
             {
                 "imageSize": int(row["p_dataset_image_size"]),
@@ -132,10 +135,10 @@ def _timing_breakdown_payload(
                     if bool(row["p_solver_distribute_denoiser"])
                     else "non-distributed"
                 ),
-                "workMultiplier": _number(_row_work_multiplier(row)),
+                "workMultiplier": number(_row_work_multiplier(row)),
                 "physicsSec": physics,
                 "denoisingSec": denoising,
-                "overheadSec": _number(max(total - physics - denoising, 0.0)),
+                "overheadSec": number(max(total - physics - denoising, 0.0)),
                 "totalSec": total,
             }
         )
@@ -213,9 +216,9 @@ def _quality_preservation_payload(
                     "iteration": int(row["stop_val"]),
                     "gpuCount": int(row["n_gpus"]),
                     "baselineGpuCount": baseline_gpus,
-                    "psnrDb": _finite(row["objective_psnr"]),
-                    "baselinePsnrDb": _finite(row["reference_psnr"]),
-                    "psnrDifferenceDb": _number(difference),
+                    "psnrDb": finite(row["objective_psnr"]),
+                    "baselinePsnrDb": finite(row["reference_psnr"]),
+                    "psnrDifferenceDb": number(difference),
                 }
             )
 
@@ -234,7 +237,7 @@ def _quality_preservation_payload(
                 int(value) for value in trajectories["stop_val"].unique()
             ),
             "independentRepetitions": 1,
-            "maxAbsoluteDifferenceDb": _number(max_absolute_difference),
+            "maxAbsoluteDifferenceDb": number(max_absolute_difference),
         },
         "values": values,
     }
@@ -262,12 +265,12 @@ def _scaling_efficiency_payload(
                     "imageSize": int(image_size),
                     "gpuCount": gpu_count,
                     "baselineGpuCount": baseline_gpus,
-                    "totalSec": _number(total_time),
-                    "speedup": _number(speedup),
-                    "absoluteEfficiencyPct": _number(absolute_efficiency),
-                    "workNormalizedEfficiencyPct": _number(work_normalized_efficiency),
-                    "workMultiplier": _number(work),
-                    "usefulComputePct": _number(100 / work),
+                    "totalSec": number(total_time),
+                    "speedup": number(speedup),
+                    "absoluteEfficiencyPct": number(absolute_efficiency),
+                    "workNormalizedEfficiencyPct": number(work_normalized_efficiency),
+                    "workMultiplier": number(work),
+                    "usefulComputePct": number(100 / work),
                 }
             )
     distributed_recipe = summary[
@@ -424,20 +427,20 @@ def _summarize_communication(df: pd.DataFrame, problem: str) -> list[dict[str, A
                 "gpuCount": int(row["n_gpus"]),
                 "nodeCount": int(row["n_nodes"]),
                 "mode": "distributed" if is_distributed else "non-distributed",
-                "iterationWallSec": _finite(row["objective_total_time_sec"]),
-                "computeCudaSec": _number(compute),
-                "communicationCudaSec": _number(communication),
-                "synchronizationCudaSec": _finite(row["objective_comm_sync_sec"]),
-                "communicationSharePct": _number(
+                "iterationWallSec": finite(row["objective_total_time_sec"]),
+                "computeCudaSec": number(compute),
+                "communicationCudaSec": number(communication),
+                "synchronizationCudaSec": finite(row["objective_comm_sync_sec"]),
+                "communicationSharePct": number(
                     100 * communication / section_cuda if section_cuda else 0
                 ),
                 "computeSpeedup": (
-                    _number(baseline_compute / compute)
+                    number(baseline_compute / compute)
                     if is_distributed and baseline_compute
                     else None
                 ),
                 "idealComputeSpeedup": (
-                    _number(int(row["n_gpus"]) / baseline_gpus)
+                    number(int(row["n_gpus"]) / baseline_gpus)
                     if is_distributed and baseline_gpus
                     else None
                 ),
@@ -458,44 +461,3 @@ def _compute_cuda_seconds(row: pd.Series) -> float:
         0.0,
     )
     return physics + denoising
-
-
-def _provenance(df: pd.DataFrame, path: Path, config: str | None) -> dict[str, Any]:
-    metadata = {
-        "source": path.as_posix(),
-        "sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "config": config,
-    }
-    for source_column, output_key in [
-        ("run_date", "runDate"),
-        ("version-cuda", "accelerator"),
-        ("platform", "platform"),
-        ("benchmark-git-tag", "benchmarkGitTag"),
-    ]:
-        if source_column not in df.columns:
-            continue
-        values = df[source_column].dropna().unique()
-        metadata[output_key] = _json_scalar(values[0]) if len(values) == 1 else None
-    return metadata
-
-
-def _json_scalar(value: Any) -> Any:
-    return value.item() if isinstance(value, np.generic) else value
-
-
-def _number(value: float) -> float:
-    return round(float(value), 6)
-
-
-def _finite(value: Any) -> float:
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"Website result data must be finite, got {value!r}")
-    return _number(number)
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    serialized = json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(serialized, encoding="utf-8")
-    temporary.replace(path)

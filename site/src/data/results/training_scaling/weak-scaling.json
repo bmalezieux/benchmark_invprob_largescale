@@ -1,0 +1,152 @@
+{
+  "id": "training-weak-scaling",
+  "methodology": {
+    "baseline": "the smallest-GPU run of each ladder",
+    "deviceMemoryMb": 32768,
+    "efficiency": "100 x baseline step time / step time",
+    "independentRepetitions": 1,
+    "ladderMinimumPoints": 2,
+    "memoryNote": "peak memory is per GPU; it is not expected to be flat along a ladder, because per-rank tensors sized by the global image are replicated on every rank",
+    "source": "the strong-scaling parquet; a ladder is the set of runs whose megapixels-per-GPU agree to 2 decimals"
+  },
+  "provenance": {
+    "config": "benchmark_training/configs/experiments/strong_scaling.yml",
+    "source": "result_benchmark/benchmark_training/strong_scaling/benchopt_run_2026-08-07_06h33m56.parquet",
+    "sourceSha256": "753646b2abd296dd8fd3bc2e4261f7a751dec8d322cd4677b87aa807c420649b"
+  },
+  "schemaVersion": 1,
+  "values": [
+    {
+      "baselineGpuCount": 1,
+      "efficiencyPct": 100.0,
+      "forwardPeakMemoryMb": 1573.295898,
+      "gpuCount": 1,
+      "imageSize": "1024x1024",
+      "localWorkloadMpix": 1.05,
+      "peakMemoryGb": 4.253263,
+      "peakMemoryMb": 4355.34082,
+      "timeRatio": 1.0,
+      "timeSec": 6.247004
+    },
+    {
+      "baselineGpuCount": 1,
+      "efficiencyPct": 82.890497,
+      "forwardPeakMemoryMb": 6030.995605,
+      "gpuCount": 16,
+      "imageSize": "4096x4096",
+      "localWorkloadMpix": 1.05,
+      "peakMemoryGb": 8.692014,
+      "peakMemoryMb": 8900.62207,
+      "timeRatio": 1.206411,
+      "timeSec": 7.536453
+    },
+    {
+      "baselineGpuCount": 1,
+      "efficiencyPct": 53.066122,
+      "forwardPeakMemoryMb": 22739.60498,
+      "gpuCount": 64,
+      "imageSize": "8192x8192",
+      "localWorkloadMpix": 1.05,
+      "peakMemoryGb": 23.874127,
+      "peakMemoryMb": 24447.106445,
+      "timeRatio": 1.884441,
+      "timeSec": 11.772113
+    },
+    {
+      "baselineGpuCount": 8,
+      "efficiencyPct": 100.0,
+      "forwardPeakMemoryMb": 6107.183105,
+      "gpuCount": 8,
+      "imageSize": "4096x4096",
+      "localWorkloadMpix": 2.1,
+      "peakMemoryGb": 8.78671,
+      "peakMemoryMb": 8997.59082,
+      "timeRatio": 1.0,
+      "timeSec": 13.254188
+    },
+    {
+      "baselineGpuCount": 8,
+      "efficiencyPct": 73.654492,
+      "forwardPeakMemoryMb": 22812.19873,
+      "gpuCount": 32,
+      "imageSize": "8192x8192",
+      "localWorkloadMpix": 2.1,
+      "peakMemoryGb": 23.966718,
+      "peakMemoryMb": 24541.918945,
+      "timeRatio": 1.35769,
+      "timeSec": 17.995084
+    },
+    {
+      "baselineGpuCount": 4,
+      "efficiencyPct": 100.0,
+      "forwardPeakMemoryMb": 6258.776855,
+      "gpuCount": 4,
+      "imageSize": "4096x4096",
+      "localWorkloadMpix": 4.19,
+      "peakMemoryGb": 8.974835,
+      "peakMemoryMb": 9190.231445,
+      "timeRatio": 1.0,
+      "timeSec": 25.31498
+    },
+    {
+      "baselineGpuCount": 4,
+      "efficiencyPct": 80.419273,
+      "forwardPeakMemoryMb": 22964.776855,
+      "gpuCount": 16,
+      "imageSize": "8192x8192",
+      "localWorkloadMpix": 4.19,
+      "peakMemoryGb": 24.154447,
+      "peakMemoryMb": 24734.15332,
+      "timeRatio": 1.243483,
+      "timeSec": 31.478747
+    },
+    {
+      "baselineGpuCount": 2,
+      "efficiencyPct": 100.0,
+      "forwardPeakMemoryMb": 8171.688965,
+      "gpuCount": 2,
+      "imageSize": "4096x4096",
+      "localWorkloadMpix": 8.39,
+      "peakMemoryGb": 10.850741,
+      "peakMemoryMb": 11111.15918,
+      "timeRatio": 1.0,
+      "timeSec": 50.030346
+    },
+    {
+      "baselineGpuCount": 2,
+      "efficiencyPct": 92.755366,
+      "forwardPeakMemoryMb": 23268.19873,
+      "gpuCount": 8,
+      "imageSize": "8192x8192",
+      "localWorkloadMpix": 8.39,
+      "peakMemoryGb": 24.529325,
+      "peakMemoryMb": 25118.02832,
+      "timeRatio": 1.078105,
+      "timeSec": 53.937953
+    },
+    {
+      "baselineGpuCount": 1,
+      "efficiencyPct": 100.0,
+      "forwardPeakMemoryMb": 12885.593262,
+      "gpuCount": 1,
+      "imageSize": "4096x4096",
+      "localWorkloadMpix": 16.78,
+      "peakMemoryGb": 14.594741,
+      "peakMemoryMb": 14945.014648,
+      "timeRatio": 1.0,
+      "timeSec": 101.164009
+    },
+    {
+      "baselineGpuCount": 1,
+      "efficiencyPct": 97.530428,
+      "forwardPeakMemoryMb": 23875.933105,
+      "gpuCount": 4,
+      "imageSize": "8192x8192",
+      "localWorkloadMpix": 16.78,
+      "peakMemoryGb": 25.277387,
+      "peakMemoryMb": 25884.043945,
+      "timeRatio": 1.025321,
+      "timeSec": 103.725587
+    }
+  ]
+}

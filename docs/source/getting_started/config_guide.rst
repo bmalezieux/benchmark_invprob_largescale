@@ -28,6 +28,8 @@ The current layout is:
    │   ├── tomography_2d.yml
    │   └── tomography_3d.yml
    └── experiments/
+       ├── comm_inference_2D.yml
+       ├── comm_inference_3D.yml
        ├── denoiser_compile.yml
        ├── reconstruction_quality.yml
        ├── strong_scaling_inference.yml
@@ -40,9 +42,9 @@ The current layout is:
    └── experiments/
        ├── batch_size.yml
        ├── checkpointing.yml
-       ├── comm_time.yml
-       ├── strong_scaling.yml
-       └── weak_scaling.yml
+       ├── comm_time_2D.yml
+       ├── comm_time_3D.yml
+       └── strong_scaling.yml
 
 Use ``examples/`` for representative imaging pipelines and ``experiments/``
 for focused performance studies.

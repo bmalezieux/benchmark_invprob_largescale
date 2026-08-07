@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 
 from toolsbench.visualization.common import (
-    COLORWAY,
     DEFAULT_OUTPUT_DIR,
     TIMING_WARMUP_ITERATIONS,
     best_per_gpu,
@@ -19,6 +18,10 @@ from toolsbench.visualization.common import (
     style_axes,
     summarize_configs,
     write_figure,
+)
+from toolsbench.visualization.scaling import (
+    plot_strong_scaling_efficiency,
+    plot_weak_scaling_by_workload,
 )
 
 
@@ -42,8 +45,25 @@ def create_scaling_visualizations(
         ],
     )
 
-    _plot_strong_scaling(summary, output_path)
-    _plot_weak_scaling(summary, output_path)
+    plot_strong_scaling_efficiency(
+        summary,
+        output_path,
+        group_col="p_dataset_image_size",
+        distribute_col="p_solver_distribute_physics",
+        title="Strong Scaling Efficiency",
+        ylabel="Parallel efficiency vs smallest feasible GPU count (%)",
+        legend_loc="upper right",
+        footnote=(
+            "100% means ideal scaling from each curve's baseline. Timings skip "
+            f"first {TIMING_WARMUP_ITERATIONS} iterations."
+        ),
+    )
+    plot_weak_scaling_by_workload(
+        summary,
+        output_path,
+        distribute_col="p_solver_distribute_physics",
+        mpix_col="image_mpix",
+    )
     _plot_timing_breakdown(summary, output_path)
     return output_path
 
@@ -54,117 +74,6 @@ def _remove_stale_outputs(output_path: Path, filenames: list[str]) -> None:
         path = output_path / filename
         if path.exists():
             path.unlink()
-
-
-def _plot_strong_scaling(summary: pd.DataFrame, output_path: Path) -> str:
-    fig, ax = plt.subplots(figsize=(9.5, 6.0))
-
-    max_efficiency = 100.0
-    all_gpus = sorted(summary["n_gpus"].unique())
-    for idx, (image_size, group) in enumerate(
-        summary.groupby("p_dataset_image_size", dropna=False)
-    ):
-        rows = best_per_gpu(group.copy())
-        baseline = rows.loc[rows["n_gpus"].idxmin()]
-        baseline_gpus = int(baseline["n_gpus"])
-        baseline_time = float(baseline["avg_total_time_sec"])
-        rows = rows.assign(
-            efficiency_pct=(
-                baseline_time
-                * baseline_gpus
-                / (rows["n_gpus"] * rows["avg_total_time_sec"])
-                * 100
-            )
-        )
-        max_efficiency = max(max_efficiency, float(rows["efficiency_pct"].max()))
-
-        label = f"{format_image_size(image_size)} ({baseline_gpus}-GPU baseline)"
-        color = COLORWAY[idx % len(COLORWAY)]
-        ax.plot(
-            rows["n_gpus"],
-            rows["efficiency_pct"],
-            marker="o",
-            markersize=7,
-            linewidth=2.8,
-            color=color,
-            label=label,
-        )
-
-    ax.set_xscale("log", base=2)
-    ax.set_xticks(all_gpus)
-    ax.set_xticklabels([str(int(gpu)) for gpu in all_gpus])
-    ax.axhline(100, color="#111827", linestyle="--", linewidth=1.3, alpha=0.55)
-    ax.set_ylim(0, max(110, max_efficiency * 1.12))
-    style_axes(
-        ax,
-        "Strong Scaling Efficiency",
-        "Number of GPUs",
-        "Parallel efficiency vs smallest feasible GPU count (%)",
-    )
-    ax.legend(loc="upper right", ncols=1)
-    ax.text(
-        0.99,
-        0.03,
-        f"100% means ideal scaling from each curve's baseline. Timings skip "
-        f"first {TIMING_WARMUP_ITERATIONS} iterations.",
-        transform=ax.transAxes,
-        ha="right",
-        va="bottom",
-        color="#6b7280",
-        fontsize=10,
-    )
-    fig.tight_layout()
-    return write_figure(fig, output_path, "strong_scaling.png")
-
-
-def _plot_weak_scaling(summary: pd.DataFrame, output_path: Path) -> str:
-    weak = summary.copy()
-    weak["local_workload_mpix"] = weak["image_mpix"] / weak["n_gpus"]
-    weak["local_workload_label"] = weak["local_workload_mpix"].round(2)
-
-    fig, ax = plt.subplots(figsize=(9.2, 5.7))
-    workloads = (
-        weak.groupby("local_workload_label")
-        .filter(lambda group: len(group) >= 2)["local_workload_label"]
-        .drop_duplicates()
-        .sort_values(ascending=False)
-    )
-    for idx, workload in enumerate(workloads):
-        rows = (
-            weak[weak["local_workload_label"] == workload].sort_values("n_gpus").copy()
-        )
-        baseline_time = float(rows.iloc[0]["avg_total_time_sec"])
-        rows["time_ratio"] = rows["avg_total_time_sec"] / baseline_time
-        color = COLORWAY[idx % len(COLORWAY)]
-        ax.plot(
-            rows["n_gpus"],
-            rows["time_ratio"],
-            marker="o",
-            markersize=7,
-            linewidth=2.6,
-            color=color,
-            label=f"{workload:g} Mpix/GPU",
-        )
-
-    ax.set_xscale("log", base=2)
-    all_gpus = sorted(weak["n_gpus"].unique())
-    ax.set_xticks(all_gpus)
-    ax.set_xticklabels([str(int(gpu)) for gpu in all_gpus])
-    ax.axhline(1, color="#111827", linestyle="--", linewidth=1.3, alpha=0.55)
-    style_axes(
-        ax,
-        "Weak Scaling Runtime Ratio",
-        "Number of GPUs",
-        "Average iteration time / smallest-GPU time",
-    )
-    ax.legend(
-        loc="center left",
-        bbox_to_anchor=(1.02, 0.5),
-        title="Local workload",
-        ncols=1,
-    )
-    fig.tight_layout()
-    return write_figure(fig, output_path, "weak_scaling.png")
 
 
 def _plot_timing_breakdown(summary: pd.DataFrame, output_path: Path) -> str:
@@ -185,12 +94,15 @@ def _plot_timing_breakdown(summary: pd.DataFrame, output_path: Path) -> str:
     for col, image_size in enumerate(sizes):
         ax = axes[0, col]
         rows = best_per_gpu(
-            summary[summary["p_dataset_image_size"] == image_size].copy()
+            summary[
+                (summary["p_dataset_image_size"] == image_size)
+                & (summary["p_solver_distribute_physics"])
+            ].copy()
         ).copy()
         x = rows["n_gpus"].to_numpy(dtype=float)
         gradient = rows["avg_gradient_time_sec"].fillna(0).to_numpy(dtype=float)
         denoising = rows["avg_denoise_time_sec"].fillna(0).to_numpy(dtype=float)
-        total = rows["avg_total_time_sec"].fillna(0).to_numpy(dtype=float)
+        total = rows["avg_total_time_sec_raw"].fillna(0).to_numpy(dtype=float)
         measured = gradient + denoising
         residual = np.clip(total - measured, a_min=0, a_max=None)
         stacked = np.vstack([gradient, denoising, residual])

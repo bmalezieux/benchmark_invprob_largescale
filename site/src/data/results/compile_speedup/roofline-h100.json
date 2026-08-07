@@ -1,0 +1,147 @@
+{
+  "id": "compile-denoiser-roofline-h100",
+  "methodology": {
+    "gpu": "h100",
+    "independentRepetitions": 1,
+    "ridgeDefinition": "peak TF32 tensor-core TFLOPS / peak memory bandwidth TB/s; points left of the ridge are memory-bound, right are compute-bound",
+    "ridgePointFlopByte": 147.462687
+  },
+  "provenance": {
+    "accelerator": null,
+    "benchmarkGitTag": null,
+    "config": null,
+    "platform": "Linux",
+    "runDate": "2026-07-16T11:00:34.436648",
+    "source": "result_benchmark/benchmark_inference/denoiser_compile/benchopt_run_2026-07-16_11h00m34.parquet",
+    "sourceSha256": "f0b568df6e4be6afeca974f7ab2138e4cd4b254c7dd886ba029087d8c5e40afd"
+  },
+  "schemaVersion": 1,
+  "values": [
+    {
+      "arithIntensityFlopByte": 68.445553,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "shape": "512",
+      "speedup": 2.026756
+    },
+    {
+      "arithIntensityFlopByte": 68.47237,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "shape": "1024",
+      "speedup": 2.112151
+    },
+    {
+      "arithIntensityFlopByte": 68.479078,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "shape": "2048",
+      "speedup": 2.116097
+    },
+    {
+      "arithIntensityFlopByte": 205.403698,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "shape": "128\u00b3",
+      "speedup": 1.162835
+    },
+    {
+      "arithIntensityFlopByte": 205.403698,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 1.138916
+    },
+    {
+      "arithIntensityFlopByte": 205.423819,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.138709
+    },
+    {
+      "arithIntensityFlopByte": 177.763489,
+      "denoiser": "drunet",
+      "dim": 2,
+      "shape": "512",
+      "speedup": 1.544326
+    },
+    {
+      "arithIntensityFlopByte": 180.49831,
+      "denoiser": "drunet",
+      "dim": 2,
+      "shape": "1024",
+      "speedup": 1.606667
+    },
+    {
+      "arithIntensityFlopByte": 181.195215,
+      "denoiser": "drunet",
+      "dim": 2,
+      "shape": "2048",
+      "speedup": 1.60079
+    },
+    {
+      "arithIntensityFlopByte": 376.462798,
+      "denoiser": "drunet",
+      "dim": 3,
+      "shape": "128\u00b3",
+      "speedup": 1.029331
+    },
+    {
+      "arithIntensityFlopByte": 378.421563,
+      "denoiser": "drunet",
+      "dim": 3,
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 1.02619
+    },
+    {
+      "arithIntensityFlopByte": 378.421563,
+      "denoiser": "drunet",
+      "dim": 3,
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.021956
+    },
+    {
+      "arithIntensityFlopByte": 92.154886,
+      "denoiser": "unet",
+      "dim": 2,
+      "shape": "512",
+      "speedup": 2.437935
+    },
+    {
+      "arithIntensityFlopByte": 92.707062,
+      "denoiser": "unet",
+      "dim": 2,
+      "shape": "1024",
+      "speedup": 2.385727
+    },
+    {
+      "arithIntensityFlopByte": 92.846142,
+      "denoiser": "unet",
+      "dim": 2,
+      "shape": "2048",
+      "speedup": 2.418787
+    },
+    {
+      "arithIntensityFlopByte": 205.399871,
+      "denoiser": "unet",
+      "dim": 3,
+      "shape": "128\u00b3",
+      "speedup": 1.648306
+    },
+    {
+      "arithIntensityFlopByte": 205.399871,
+      "denoiser": "unet",
+      "dim": 3,
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 1.597243
+    },
+    {
+      "arithIntensityFlopByte": 205.820923,
+      "denoiser": "unet",
+      "dim": 3,
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.593597
+    }
+  ]
+}

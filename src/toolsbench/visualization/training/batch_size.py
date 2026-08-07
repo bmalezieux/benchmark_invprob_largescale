@@ -57,6 +57,13 @@ def _plot_batch_size_overview(summary, output_path: Path) -> str:
 
 def _plot_strong_scaling_panel(summary, ax) -> None:
     max_efficiency = 100.0
+    # Efficiency is measured against the largest batch size's single-GPU time so
+    # that curves stay comparable in absolute terms, not just within each series.
+    max_batch_size = summary["p_solver_max_batch_size"].max()
+    baseline_candidates = summary[summary["p_solver_max_batch_size"] == max_batch_size]
+    baseline = baseline_candidates.loc[baseline_candidates["n_gpus"].idxmin()]
+    baseline_time = float(baseline["avg_total_time_sec"])
+    baseline_gpus = int(baseline["n_gpus"])
     for idx, (batch_size, group) in enumerate(
         summary.groupby("p_solver_max_batch_size", dropna=False)
     ):
@@ -66,9 +73,6 @@ def _plot_strong_scaling_panel(summary, ax) -> None:
             .first()
             .sort_values("n_gpus")
         )
-        baseline = rows.loc[rows["n_gpus"].idxmin()]
-        baseline_time = float(baseline["avg_total_time_sec"])
-        baseline_gpus = int(baseline["n_gpus"])
         rows = rows.assign(
             efficiency_pct=(
                 baseline_time
