@@ -45,6 +45,7 @@ import pandas as pd
 from toolsbench.visualization.common import (
     TIMING_WARMUP_ITERATIONS,
     clear_png_outputs,
+    collective_bytes,
     configure_matplotlib,
     distributed_flag,
     load_results,
@@ -484,7 +485,8 @@ def _plot_transfer_bandwidth(
                 continue
             counts = np.array(counts_raw, dtype=float)
             payload = rows["payload_bytes"].to_numpy(dtype=float)
-            transfer_bytes = counts * 2 * payload * (gpus - 1) / gpus
+            nodes = rows["n_nodes"].to_numpy(dtype=float)
+            transfer_bytes = counts * collective_bytes(payload, gpus, nodes)
             bandwidth = (
                 np.where(
                     transfer > 0,

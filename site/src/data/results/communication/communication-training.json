@@ -121,7 +121,7 @@
       "waitSec": 0.187637
     },
     {
-      "bandwidthGBs": 20.976639,
+      "bandwidthGBs": 11.986651,
       "commEPct": 95.334647,
       "commEPctSection": 92.813425,
       "computeMaxSec": 2.9576,
@@ -321,7 +321,7 @@
       "waitSec": 1.740042
     },
     {
-      "bandwidthGBs": 14.124571,
+      "bandwidthGBs": 8.071183,
       "commEPct": 99.725582,
       "commEPctSection": 99.689391,
       "computeMaxSec": 18.455637,

@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -231,7 +230,7 @@ class TestInvProbResized:
         out = ip.resized([16, 16])
         assert out.ground_truth_shape == torch.Size((1, 1, 16, 16))
         assert out.ground_truth.shape == (1, 1, 16, 16)
-        ip.physics.A.assert_called_once()
+        ip.physics.assert_called_once()
 
     def test_no_ground_truth_falls_back_to_random(self):
         ip = self._problem((1, 1, 8, 8))
@@ -243,7 +242,7 @@ class TestInvProbResized:
             imsize = (8, 8)
 
         leaf = Leaf()
-        parent = SimpleNamespace(local_physics=[leaf], A=lambda x: torch.zeros_like(x))
+        parent = MagicMock(local_physics=[leaf])
         ip = self._problem((1, 1, 8, 8))
         ip.physics = parent
         ip.resized([16, 16], device=torch.device("cpu"))

@@ -13,7 +13,6 @@ from toolsbench.visualization.website.compile_speedup import (
 from toolsbench.visualization.website.inference_scaling import (
     _overlap_work_multiplier,
     _quality_preservation_payload,
-    _summarize_communication,
 )
 from toolsbench.visualization.website.training_scaling import (
     _batch_size_payload,
@@ -67,48 +66,6 @@ def test_quality_preservation_requires_single_process_reference():
     assert [value["psnrDifferenceDb"] for value in payload["values"]] == [
         0.01,
         -0.01,
-    ]
-
-
-def test_communication_summary_excludes_initial_iterations():
-    rows = []
-    for stop_val, total, gradient, denoise, comm in [
-        (1, 100.0, 40.0, 60.0, 20.0),
-        (2, 100.0, 40.0, 60.0, 20.0),
-        (3, 10.0, 4.0, 6.0, 2.0),
-        (4, 14.0, 6.0, 8.0, 4.0),
-    ]:
-        rows.append(
-            {
-                "n_gpus": 2,
-                "n_nodes": 1,
-                "p_solver_distribute_physics": True,
-                "p_solver_distribute_denoiser": True,
-                "stop_val": stop_val,
-                "objective_total_time_sec": total,
-                "objective_gradient_cuda_sec": gradient,
-                "objective_denoise_cuda_sec": denoise,
-                "objective_gradient_comm_sec": comm / 2,
-                "objective_denoise_comm_sec": comm / 2,
-                "objective_comm_cuda_sec": comm,
-                "objective_comm_sync_sec": 0.5,
-            }
-        )
-
-    assert _summarize_communication(pd.DataFrame(rows), "test") == [
-        {
-            "problem": "test",
-            "gpuCount": 2,
-            "nodeCount": 1,
-            "mode": "distributed",
-            "iterationWallSec": 12.0,
-            "computeCudaSec": 9.0,
-            "communicationCudaSec": 3.0,
-            "synchronizationCudaSec": 0.5,
-            "communicationSharePct": 25.0,
-            "computeSpeedup": 1.0,
-            "idealComputeSpeedup": 1.0,
-        }
     ]
 
 

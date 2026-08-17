@@ -96,8 +96,12 @@ class InvProb(MappingABC):
             elif hasattr(operator, "imsize"):
                 operator.imsize = None
 
+        # The full physics call, not just A: it applies the sensor noise, so a
+        # resized problem states the same noisy problem as the dataset's own.
         with torch.no_grad():
-            measurements = self.physics.A(ground_truth)
+            measurements = self.physics(ground_truth)
+            for i in range(len(measurements)):
+                measurements[i] = measurements[i].clamp(self.min_pixel, self.max_pixel)
 
         return replace(
             self,

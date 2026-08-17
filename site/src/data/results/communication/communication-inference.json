@@ -161,7 +161,7 @@
       "waitSec": 0.001997
     },
     {
-      "bandwidthGBs": 29.128992,
+      "bandwidthGBs": 16.645139,
       "commEPct": 95.987168,
       "commEPctSection": 97.919882,
       "computeMaxSec": 2.276661,
@@ -181,7 +181,7 @@
       "waitSec": 0.024798
     },
     {
-      "bandwidthGBs": 29.147066,
+      "bandwidthGBs": 16.655466,
       "commEPct": 95.987168,
       "commEPctSection": 44.236973,
       "computeMaxSec": 0.038412,
@@ -441,7 +441,7 @@
       "waitSec": 0.004718
     },
     {
-      "bandwidthGBs": 30.272074,
+      "bandwidthGBs": 17.298328,
       "commEPct": 99.71723,
       "commEPctSection": 99.861633,
       "computeMaxSec": 22.388764,
@@ -461,7 +461,7 @@
       "waitSec": 0.76809
     },
     {
-      "bandwidthGBs": 29.476499,
+      "bandwidthGBs": 16.843714,
       "commEPct": 99.71723,
       "commEPctSection": 28.641786,
       "computeMaxSec": 0.013046,

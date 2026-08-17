@@ -57,9 +57,11 @@ class Solver(BaseSolver):
         min_pixel=0.0,
         max_pixel=1.0,
         weights=None,
+        ground_truth=None,
         **kwargs,
     ):
         self.problem = InvProb(
+            ground_truth=ground_truth,
             measurements=measurements,
             physics=physics,
             ground_truth_shape=ground_truth_shape,

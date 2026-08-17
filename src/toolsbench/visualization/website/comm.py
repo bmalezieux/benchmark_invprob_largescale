@@ -25,7 +25,11 @@ from toolsbench.visualization.comm import (
     collective_count,
     prepare_comm_summary,
 )
-from toolsbench.visualization.common import TIMING_WARMUP_ITERATIONS, load_results
+from toolsbench.visualization.common import (
+    TIMING_WARMUP_ITERATIONS,
+    collective_bytes,
+    load_results,
+)
 from toolsbench.visualization.inference.comm_inference import (
     SECTIONS as INFERENCE_SECTIONS,
 )
@@ -214,15 +218,17 @@ def _bandwidth_gbs(
 ) -> float | None:
     """Implied bandwidth (GB/s), or None where it can't be computed exactly.
 
-    Same ring-allreduce byte accounting as ``comm.py``'s ``transfer_bandwidth.png``:
-    each of ``count`` collectives moves ``2 * payload * (gpus - 1) / gpus`` bytes.
+    Same byte accounting as ``comm.py``'s ``transfer_bandwidth.png``: each of
+    ``count`` collectives moves ``collective_bytes()`` bytes, which follows the
+    algorithm NCCL actually chose (ring, or tree at 2 nodes) instead of
+    assuming a ring everywhere -- see that helper's docstring.
     """
     if gpu_count <= 1 or transfer <= 0:
         return None
     count = collective_count(row, section)
     if count is None:
         return None
-    transfer_bytes = (
-        count * 2 * float(row["payload_bytes"]) * (gpu_count - 1) / gpu_count
+    transfer_bytes = count * collective_bytes(
+        float(row["payload_bytes"]), gpu_count, int(row.get("n_nodes", 1))
     )
     return number(transfer_bytes / transfer / 1e9)

@@ -313,8 +313,9 @@ apart individually, in absolute seconds per section, 2D (solid) and 3D
   smaller physics-operator plateau underneath it, so neither section shows
   a visible flattening here — both keep decreasing all the way to 64 GPUs.
 - **Transfer.** Grows with GPU count, in every section and dimensionality —
-  with one exception: 4 GPUs is consistently *lower* than 2 GPUs. We come
-  back to why in the bandwidth section below.
+  then levels off at the largest sizes. One exception on the way up: 4 GPUs
+  is consistently *lower* than 2 GPUs. We come back to both in
+  [What sets the transfer time?](#what-sets-the-transfer-time) below.
 - **Wait.** Generally a small percentage of compute — except for the
   physics gradient, for the same reason as above: once GPU count exceeds
   the operator count, some GPUs hold zero physics operators, finish
@@ -445,28 +446,59 @@ problem in a separate
 (small) section — both are real, but they are not the same thing, and fixing
 one would not fix the other.
 
-### Does `transfer` really measure data movement?
+### What sets the transfer time?
 
-The story above rests on `transfer` being real data movement, and not
-leftover skew slipping through the min-reduction. There is a simple way to
-check: work out how fast the data appears to be moving, then ask whether a
-real cable could actually go that fast.
-
-Speed is bytes divided by time. The time is measured. The bytes take a
-little care.
+Transfer time is bytes divided by a rate, so it is worth knowing what each of
+those is. It turns out both follow simple rules, and together they explain the
+shape of every transfer measurement on this page — including why transfer time
+stops growing once there are enough GPUs.
 
 Each `all_reduce` shares one image across all the GPUs. That image is the
 `payload`: `8192 x 8192 x 3 channels x 4 bytes ≈ 805 MB` for 2D inference,
 and `512³ x 4 bytes ≈ 537 MB` for 3D. But no GPU ever sends the whole
-805 MB. A ring `all_reduce` cuts the payload into one piece per GPU and
-passes the pieces around the circle twice — once to add them up, once to
-hand the finished result back out. So each GPU moves a little under two
-payloads' worth:
+805 MB, and *how much* it does send depends on which route the GPUs take.
+
+#### Two ways to add up numbers spread across many GPUs
+
+**A ring.** The GPUs stand in a circle. Cut the image into one slice per GPU,
+then pass slices to your neighbour twice around: once adding as you go, once
+handing the finished result back out. Every GPU ends up sending just under two
+payloads' worth. Lots of small hops, and every cable is busy at once — which
+is why a ring is the fast choice when there is a lot of data to move.
+
+**A tree.** Each node first adds up its own 4 GPUs using the quick cables
+inside the box. Then one node acts as the leader: the others hand it their
+totals, it finishes the sum, and hands the answer back down. Far less data
+crosses the slow network — especially when there are only a couple of nodes
+for the totals to travel between.
+
+Nobody chooses this by hand. NCCL builds both at startup and decides for itself
+on every call, from the message size and the shape of the cluster. It has seven
+algorithms in total, but only these two were possible here — the others need
+NVSwitch hardware or a network plugin this cluster doesn't have. Running with
+`NCCL_DEBUG_SUBSYS=INIT,TUNING` makes it say which one it took:
+
+| Nodes | GPUs  | What NCCL chose |
+| ----- | ----- | --------------- |
+| 1     | 2, 4  | Ring            |
+| 2     | 8     | **Tree**        |
+| 4     | 16    | Ring            |
+
+That middle row is the surprise, and it matters, because the two routes do not
+move the same number of bytes:
 
 ```
-bytes moved = 2 x payload x (gpus - 1) / gpus
-bandwidth   = bytes moved / transfer time
+ring:  bytes = 2 x payload x (gpus  - 1) / gpus      -> 1.4 GB at 8 GPUs
+tree:  bytes = 2 x payload x (nodes - 1) / nodes     -> 805 MB at 2 nodes
 ```
+
+Charge a ring's 1.4 GB to a tree run and you overstate its speed by 1.75×, so
+the chart below uses the formula matching what NCCL actually did. It only
+matters at 2 nodes: by 16 the two byte counts agree to within 5%.
+
+Notice what both formulas do as GPUs are added: `(gpus - 1) / gpus` climbs
+towards 1 and stops there. Whether it is a ring or a tree, **no GPU ever moves
+more than two payloads**, however large the job gets. Hold that thought.
 
 This is exact for inference, where `denoiser` and `gradient` each fire one
 `all_reduce` per iteration; training's sections mix in other messages the
@@ -474,11 +506,11 @@ formula cannot count, so the chart below is inference only.
 
 <ResultChart
   id="communication-bandwidth"
-  title="Measured bandwidth stays under the hardware limit at every size"
+  title="Transfer time stops growing once the byte count stops growing"
   description="Transfer time and implied bandwidth vs GPU count, inference's denoiser and gradient sections -- the cases where the collective count is exactly known."
   values={commInferenceData.values}
   spec={communicationBandwidthSpec}
-  note="Implied bandwidth = bytes moved by the ring all-reduce / measured transfer time. 4 GPUs/node, so 4 GPUs stay on a single node (NVLink-class interconnect) and 8+ GPUs span multiple nodes (cluster network). Configurations: comm_inference_2D.yml (2D), comm_inference_3D.yml (3D)."
+  note="Implied bandwidth = bytes moved by the all-reduce / measured transfer time, using the byte count of the algorithm NCCL actually chose (tree at 2 nodes, ring elsewhere -- read from its own logs). 4 GPUs/node, so 4 GPUs stay on a single node (NVLink-class interconnect) and 8+ GPUs span multiple nodes (cluster network). Configurations: comm_inference_2D.yml (2D), comm_inference_3D.yml (3D)."
   tableColumns={[
     { key: "section", label: "Section" },
     { key: "dim", label: "Dim" },
@@ -488,44 +520,65 @@ formula cannot count, so the chart below is inference only.
   ]}
 />
 
-The measured bandwidth is about 40 GB/s at 2 GPUs, 120 GB/s at 4, then 29
-GB/s at 8 and 10 GB/s from 16 GPUs on. The drop after 4 GPUs is no surprise:
-a node holds only 4 GPUs, so beyond that the data has to cross between
-machines, and the network is far slower than the cables inside a node.
+The rate works out at about 40 GB/s at 2 GPUs, 120 GB/s at 4, 17 GB/s at 8 and
+10 GB/s from 16 GPUs on. Those numbers are *measured*, not looked up: each is
+the bytes above divided by the transfer time beside it. What makes them useful
+is that they depend only on the **route** the data takes, not on how many GPUs
+are involved:
 
-The question is whether those numbers are physically possible. Two kinds of
-cable set the limits. Inside a node, each V100 has 6 NVLink cables at
-25 GB/s each — 50 GB/s towards any one partner, 150 GB/s if all six are in
-use. Between nodes, each machine has 4
-[network cables](http://archive.idris.fr/eng/jean-zay/cpu/jean-zay-cpu-hw-eng.html)
-at 100 Gb/s, so 50 GB/s can leave a machine, whatever it is sending and
-wherever it is going.
+```
+NVLink, 2 GPUs      40 GB/s
+NVLink, 4 GPUs     119 GB/s
+network, tree       17 GB/s    (2 nodes, the only size NCCL uses a tree)
+network, ring     10.5 GB/s    <- the same at 2, 4, 8 and 16 nodes
+```
 
-These are ceilings, not targets. A ceiling says what the hardware makes
-*impossible*, so a measurement below one is fine and a measurement above one
-would mean the metric is broken:
+With a byte rule and a rate, the chart can be read from left to right.
 
-| GPUs  | Measured | Ceiling                              | Share |
-| ----- | -------- | ------------------------------------ | ----- |
-| 2     | 40 GB/s  | 50 GB/s — 2 NVLink cables to a partner | 80% |
-| 4     | 120 GB/s | 150 GB/s — all 6 NVLink cables per GPU | 80% |
-| 8     | 29 GB/s  | 50 GB/s — a machine's network          | 58% |
-| 16–64 | 10 GB/s  | 50 GB/s — a machine's network          | 20% |
+**2 and 4 GPUs — inside one node.** This is the oddity flagged earlier: 4 GPUs
+transfers *faster* than 2. With 2 GPUs a pair is joined by only 2 of the V100's
+6 NVLink cables; with 4 GPUs all 6 are in play, so the rate triples. Bytes rise
+too, but only by half (1.0 → 1.5 payloads, as `(gpus - 1) / gpus` goes from ½ to
+¾). Three times the rate against 1.5× the bytes halves the time, and the
+measurement obliges: 20.1 ms down to 10.1 ms. That the measured ratio is 2.97 to
+3.07 across all four series — following the cable count that exactly — is also
+the sharpest sign these rates really are cables and not bookkeeping.
 
-Nothing exceeds its ceiling, so nothing impossible is being claimed. On a
-single node the evidence is stronger than that: 2 and 4 GPUs both reach 80%
-of a tight limit, the usual efficiency of a real collective. The multi-node
-rows sit well under a much looser limit, so they confirm less — a machine's
-total network capacity is an upper bound for *any* algorithm, and saying how
-close a ring should get to it would mean working out which cables the ring
-actually uses, which these measurements do not observe.
+**8 GPUs — the data leaves the node.** A node holds only 4 GPUs, so beyond that
+every byte has to cross the network, which is far slower than the cables inside
+a box. Transfer time jumps accordingly. But this is the one size where NCCL
+picks a tree, and the dip in the middle of the chart is exactly that: one
+payload across the network instead of nearly two, at a higher rate, so a little
+over a third of the time a ring would have needed.
 
-The sharpest evidence is a prediction rather than a comparison. Going from
-2 to 4 GPUs puts 6 NVLink cables to work instead of 2, so the bandwidth
-should triple — and the measured ratio is 2.97 to 3.07 across all four
-series. A number that follows the cable count that exactly is measuring
-cables. Had `transfer` been quietly counting GPUs waiting on each other, it
-would have had no reason to. `transfer` really is transfer.
+**16 to 64 GPUs — a ring over the network.** Here the rate is a single number,
+10.5 GB/s, which is worth testing since one constant covering four node counts
+is a real claim rather than a restatement. It can be tested without
+circularity: force a ring onto the 2-node job — a configuration that appears
+nowhere in the chart — and it gives 10.5 GB/s. Feeding *only* that number back
+through the byte formula predicts every ring row, in both 2D and 3D
+(`denoiser` shown here):
+
+| GPUs | bytes          | 2D predicted | 2D measured | 3D predicted | 3D measured |
+| ---- | -------------- | ------------ | ----------- | ------------ | ----------- |
+| 16   | 1.88 × payload | 144 ms       | 148 ms      | 96 ms        | 96 ms       |
+| 32   | 1.94 × payload | 149 ms       | 148 ms      | 99 ms        | 99 ms       |
+| 64   | 1.97 × payload | 151 ms       | 150 ms      | 101 ms       | 105 ms      |
+
+`gradient` is not shown but is predicted by the same constant, a little less
+tightly: twelve predictions in all, mostly inside 5% and never worse than 13%
+(`gradient` 2D, the noisiest series). Skew leaking through the min-reduction
+could not do that — it has no reason to scale with a byte count that changes
+when the image size does. `transfer` really is transfer.
+
+Which brings the flat tail of the chart, and the point of all this. The bytes
+stall at two payloads; the rate does not change. So **transfer time stops
+growing** — roughly 150 ms per iteration from 16 GPUs on for a 2D image, no
+matter how many more GPUs are added. Compute per GPU keeps falling as the job
+grows. Transfer does not. That gap is the whole mechanism behind the
+communication-efficiency drop earlier on this page, and it is arithmetic rather
+than a quirk of the ring: a tree's byte count converges to the same two
+payloads, so it flattens out too, just at a lower level.
 
 
 ## Conclusions

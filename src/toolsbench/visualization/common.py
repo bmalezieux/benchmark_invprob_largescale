@@ -428,6 +428,37 @@ def payload_bytes(df: pd.DataFrame, dtype_bytes: int = 4) -> pd.Series:
     return df["image_mpix"] * 1e6 * channels * dtype_bytes
 
 
+def collective_bytes(payload, n_gpus, n_nodes):
+    """Bytes pushed over the slowest link by one all_reduce of ``payload``.
+
+    NCCL builds both a ring and a double binary tree at startup and picks per
+    call from message size and topology, so the byte count is a property of
+    the *run*, not of the formula. Read off this machine's own logs with
+    ``NCCL_DEBUG=INFO`` + ``NCCL_DEBUG_SUBSYS=INIT,TUNING`` at the payload
+    sizes used here (805 MB / 1.8 GB): 1 node -> RING, 2 nodes -> TREE,
+    4 nodes -> RING.
+
+    Ring: each GPU sends one slice per step for ``2 * (n_gpus - 1)`` steps,
+    so ``2 * payload * (n_gpus - 1) / n_gpus``. With each node's GPUs
+    contiguous in the ring (also confirmed in the logs) a node has exactly one
+    outgoing inter-node hop, carrying that same total -- which is what makes
+    the result comparable to a per-cable rate.
+
+    Tree: partial sums climb to a leader and the result comes back down, so a
+    node pushes ``2 * payload * (n_nodes - 1) / n_nodes`` across the network.
+    At 2 nodes that is 1x payload against the ring's 1.75x, so charging the
+    ring's bytes to a run that used a tree overstates its speed by 1.75x.
+    The two counts converge as nodes grow (within 5% by 16 nodes), which is
+    why only the 2-node rows are sensitive to getting this right.
+
+    Accepts scalars or arrays so the PNG figures (whole columns at once) and
+    the website export (row by row) can share one definition.
+    """
+    tree = 2 * payload * (n_nodes - 1) / n_nodes
+    ring = 2 * payload * (n_gpus - 1) / n_gpus
+    return np.where(np.asarray(n_nodes) == 2, tree, ring)[()]
+
+
 def mark_node_boundary(ax, summary: pd.DataFrame) -> None:
     """Vertical guide at the smallest GPU count that spans more than one node.
 

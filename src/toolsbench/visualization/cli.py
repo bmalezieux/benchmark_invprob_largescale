@@ -176,22 +176,12 @@ def _build_website_parser() -> argparse.ArgumentParser:
     inference_scaling = subparsers.add_parser(
         "inference_scaling",
         aliases=["inference-scaling"],
-        help="Export distributed PnP scaling and communication data.",
+        help="Export distributed PnP scaling data.",
     )
     inference_scaling.add_argument(
         "--scaling-results",
         required=True,
         help="Inference strong-scaling parquet file or containing directory.",
-    )
-    inference_scaling.add_argument(
-        "--comm-2d-results",
-        required=True,
-        help="2D inference communication parquet file or containing directory.",
-    )
-    inference_scaling.add_argument(
-        "--comm-3d-results",
-        required=True,
-        help="3D inference communication parquet file or containing directory.",
     )
     inference_scaling.add_argument(
         "--output-dir",
@@ -353,8 +343,6 @@ def _run_website(args, parser: argparse.ArgumentParser) -> list[Path]:
     if finding == "inference_scaling":
         return create_inference_scaling_website_data(
             scaling_results=args.scaling_results,
-            comm_2d_results=args.comm_2d_results,
-            comm_3d_results=args.comm_3d_results,
             output_dir=Path(args.output_dir),
         )
     if finding == "training_scaling":
