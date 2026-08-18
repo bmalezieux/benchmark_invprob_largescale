@@ -71,6 +71,22 @@ const dimDash = {
   field: "dim",
   type: "nominal",
   title: "Dimensionality",
+  // The default strokeDash legend symbol is a filled circle: the dash pattern
+  // lands on an outline that has no stroke color, so both entries render as
+  // identical dots and say nothing about solid vs dashed. symbolType "stroke"
+  // draws a line segment instead -- but on a view that also carries a color
+  // legend, Vega-Lite still paints that segment with fill and emits no stroke
+  // at all, so it stays invisible. All three properties are needed together:
+  // clearing the fill is what makes Vega-Lite fall through to the stroke.
+  legend: {
+    symbolType: "stroke",
+    symbolStrokeWidth: 2,
+    symbolFillColor: "transparent",
+    symbolStrokeColor: "#50617d",
+    // Longer than the default swatch: at the shared symbolSize the segment is
+    // barely wider than one dash, which reads as a dot rather than a dash.
+    symbolSize: 400,
+  },
   scale: {
     domain: ["2D", "3D"],
     range: [
@@ -382,16 +398,48 @@ const _ONE_SECTION_PER_STUDY_FILTER =
 const _COMBINED_SERIES = ["inference (combined)", "training (combined)"];
 const _COMBINED_COLORS = ["#111827", "#8b8f98"];
 
+const _SERIES_DOMAIN = [...INFERENCE.sections, ..._COMBINED_SERIES];
+
+// Both channels below key off the same field with the same domain, so
+// Vega-Lite merges them into a single legend whose entries carry the color and
+// the dash together. The default filled-circle symbol cannot show a dash, so
+// the symbol is drawn as a line segment instead -- wide enough that "6,3"
+// reads as a dash rather than a dot.
+const _seriesLegend = {
+  // Default labelLimit clips "inference (combined)" to "inference (com...".
+  labelLimit: 220,
+  symbolType: "stroke",
+  symbolStrokeWidth: 2.4,
+  symbolFillColor: "transparent",
+  symbolSize: 400,
+};
+
 const _seriesColor = {
   field: "series",
   type: "nominal",
   title: "Series",
   scale: {
-    domain: [...INFERENCE.sections, ..._COMBINED_SERIES],
+    domain: _SERIES_DOMAIN,
     range: [...INFERENCE.colors, ..._COMBINED_COLORS],
   },
-  // Default labelLimit clips "inference (combined)" to "inference (com...".
-  legend: { labelLimit: 220 },
+  legend: _seriesLegend,
+};
+
+// Solid for a section's own value, dashed for the combined aggregates.
+const _seriesDash = {
+  field: "series",
+  type: "nominal",
+  title: "Series",
+  scale: {
+    domain: _SERIES_DOMAIN,
+    range: [
+      [1, 0],
+      [1, 0],
+      [6, 3],
+      [6, 3],
+    ],
+  },
+  legend: _seriesLegend,
 };
 
 // Labels on the combined lines only -- adding them to every section line too
@@ -461,6 +509,7 @@ function _sectionPlusCombinedSpec({
             x: gpuAxis,
             y: { field: sectionField, type: "quantitative", title: "%", scale: yScale },
             color: _seriesColor,
+            strokeDash: _seriesDash,
             tooltip: [
               { field: "study", type: "nominal", title: "Study" },
               { field: "section", type: "nominal", title: "Section" },
@@ -477,14 +526,12 @@ function _sectionPlusCombinedSpec({
             { filter: _ONE_SECTION_PER_STUDY_FILTER },
             { calculate: "datum.study + ' (combined)'", as: "series" },
           ],
-          mark: { type: "line", point: { size: 40 }, strokeWidth: 3, strokeDash: [6, 3] },
+          mark: { type: "line", point: { size: 40 }, strokeWidth: 3 },
           encoding: {
             x: gpuAxis,
             y: { field: combinedField, type: "quantitative", scale: yScale },
-            // The dash pattern lives on the mark, not in an encoding: a
-            // strokeDash channel makes Vega union its legend with the color
-            // one, and suppressing that union takes the color legend with it.
             color: _seriesColor,
+            strokeDash: _seriesDash,
             tooltip: [
               { field: "study", type: "nominal", title: "Study" },
               { field: "gpuCount", type: "quantitative", title: "GPUs" },

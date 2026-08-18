@@ -131,6 +131,24 @@ made of.
 
 ## Experimental setting
 
+**What is being distributed.** Every run on this page is the same kind of
+distributed architecture: a plug-and-play (PnP) solver that alternates a
+*physics* step — a gradient step through the acquisition model — with a
+*denoising* step, a DRUNet acting as the learned image prior. The two are
+parallelized in completely different ways. The acquisition operators are
+distributed whole across the workers, one or more per GPU, so a section's
+critical path is set by the busiest GPU's operator count. The image handed to
+the denoiser is instead split into overlapping tiles, one group of tiles per
+GPU; the overlap gives the network the spatial context it needs at tile
+boundaries, at the cost of extra computation and extra data movement. Between
+the two steps, the workers reconcile their copies with an `all_reduce` — that
+collective is the communication this page takes apart. The inference runs
+execute that alternation as a plain loop with fixed denoiser weights. The
+training runs *unroll* it instead: a fixed number of iterations — five in 2D,
+one in 3D — is treated as a single differentiable network and backpropagated
+through, which is why training's sections are `forward` and `backward`, each
+containing both physics and denoiser work, rather than one section per step.
+
 **Experiments.** Four result sets: inference's `denoiser` and `gradient`
 sections, and training's `forward` and `backward` sections, each run on a 2D
 problem (8192² multiframe super-resolution for inference, 4096² synthetic for
@@ -343,7 +361,13 @@ apart individually, in absolute seconds per section, 2D (solid) and 3D
 The **denoiser** stays under 4% wait at every GPU count, in both
 dimensionalities. That means each GPU genuinely gets the same amount of tile
 work — the residual few percent is just timing noise between otherwise
-identical GPUs, not real imbalance.
+identical GPUs, not real imbalance. Worth keeping in mind, though, that this
+balance is a property of the *tiling*, not something guaranteed: the denoiser's
+load balance depends on how many tiles the image is split into relative to the
+number of GPUs. These runs are tiled favourably; a poorly chosen tiling — too
+few tiles to spread evenly across the ranks — would leave some GPUs with more
+tile work than others and degrade performance in exactly the same way the
+physics gradient does below.
 
 The **physics gradient** tells a completely different story, and it tracks
 the operator count exactly. In 2D (8 operators), wait stays under 3% through
@@ -351,7 +375,18 @@ the operator count exactly. In 2D (8 operators), wait stays under 3% through
 GPUs and keeps climbing to 302% at 64, because every GPU added past 8 has
 zero operators and nothing to do but wait. In 3D (2 operators), the same
 thing happens two steps earlier: wait is low at 2 GPUs (one operator each),
-then jumps to 54% by 4 GPUs, for the identical reason. 
+then jumps to 54% by 4 GPUs, for the identical reason.
+
+This is normal and expected behaviour rather than a defect in the
+implementation, and with the current design it is essentially unavoidable. The
+PnP iteration is serialized — physics, then denoising, then physics again — so
+every GPU has to be present at the end of the physics step before the denoising
+step can start, whether or not it was given an operator to work on. With a
+fixed number of acquisition operators, once GPU count passes that number the
+surplus GPUs have nothing to do but wait at the collective. How far this can be
+avoided — overlapping the physics step with denoising, or splitting the
+operators themselves — is an open question, not something these measurements
+settle.
 
 Training's `forward` and `backward` are a mix of both stories, because — as
 established earlier — they bundle physics and denoiser computation into one
@@ -395,6 +430,15 @@ still only 11% of the combined `compute_max` in 2D, and just 0.5% in 3D. Even
 at that weight, an 11% share pulls the near-perfect denoiser figure (97%)
 down to 89% — visible, but nowhere near as severe as the gradient's own 27%
 would suggest in isolation.
+
+That weighting is the whole argument, and it rests on a property of *this*
+setup: the acquisition models used here are not computationally heavy compared
+with the denoiser, which is why the gradient can collapse to 27% load balance
+and still barely move the combined figure. A heavier physics operator would
+carry a much larger share of `compute_max`, and the same 27% would then drag
+combined load balance down with it. We have no such example in this benchmark
+yet, but the conclusion above should not be read as holding for any acquisition
+model.
 
 ## How much of the critical path is communication — and does it check out?
 
@@ -460,23 +504,25 @@ and `512³ x 4 bytes ≈ 537 MB` for 3D. But no GPU ever sends the whole
 
 #### Two ways to add up numbers spread across many GPUs
 
-**A ring.** The GPUs stand in a circle. Cut the image into one slice per GPU,
-then pass slices to your neighbour twice around: once adding as you go, once
-handing the finished result back out. Every GPU ends up sending just under two
-payloads' worth. Lots of small hops, and every cable is busy at once — which
-is why a ring is the fast choice when there is a lot of data to move.
+**A ring.** The GPUs are arranged in a logical circle. The image is divided
+into one slice per GPU, and the slices travel around the ring twice: once
+accumulating the partial sums, once propagating the completed result. Each GPU
+therefore sends just under two payloads. The transfers are numerous and small,
+and every link is active simultaneously, which is what makes the ring efficient
+for large messages.
 
-**A tree.** Each node first adds up its own 4 GPUs using the quick cables
-inside the box. Then one node acts as the leader: the others hand it their
-totals, it finishes the sum, and hands the answer back down. Far less data
-crosses the slow network — especially when there are only a couple of nodes
-for the totals to travel between.
+**A tree.** Each node first reduces across its own 4 GPUs over the fast
+intra-node links. One node then acts as the root: the others send it their
+partial sums, it completes the reduction, and the result is propagated back
+down. Far less data crosses the slower inter-node network, and the saving is
+largest when few nodes participate.
 
-Nobody chooses this by hand. NCCL builds both at startup and decides for itself
-on every call, from the message size and the shape of the cluster. It has seven
-algorithms in total, but only these two were possible here — the others need
-NVSwitch hardware or a network plugin this cluster doesn't have. Running with
-`NCCL_DEBUG_SUBSYS=INIT,TUNING` makes it say which one it took:
+The choice is not made by the application. NCCL constructs both topologies at
+startup and selects one per call, from the message size and the cluster
+topology. Seven algorithms are implemented in total, but only these two are
+available here — the remainder require NVSwitch hardware or a network plugin
+this cluster does not provide. Running with `NCCL_DEBUG_SUBSYS=INIT,TUNING`
+reports the algorithm selected:
 
 | Nodes | GPUs  | What NCCL chose |
 | ----- | ----- | --------------- |
@@ -484,25 +530,29 @@ NVSwitch hardware or a network plugin this cluster doesn't have. Running with
 | 2     | 8     | **Tree**        |
 | 4     | 16    | Ring            |
 
-That middle row is the surprise, and it matters, because the two routes do not
-move the same number of bytes:
+The 8-GPU row is the one that matters for the byte accounting, because the two
+algorithms do not move the same volume:
 
 ```
 ring:  bytes = 2 x payload x (gpus  - 1) / gpus      -> 1.4 GB at 8 GPUs
 tree:  bytes = 2 x payload x (nodes - 1) / nodes     -> 805 MB at 2 nodes
 ```
 
-Charge a ring's 1.4 GB to a tree run and you overstate its speed by 1.75×, so
-the chart below uses the formula matching what NCCL actually did. It only
-matters at 2 nodes: by 16 the two byte counts agree to within 5%.
+Attributing the ring's 1.4 GB to a run that in fact used the tree overestimates
+the implied bandwidth by a factor 1.75, so every point below is computed with
+the formula for the algorithm NCCL reported. The distinction only affects the
+2-node case: from 16 GPUs onward the two byte counts agree to within 5%.
 
-Notice what both formulas do as GPUs are added: `(gpus - 1) / gpus` climbs
-towards 1 and stops there. Whether it is a ring or a tree, **no GPU ever moves
-more than two payloads**, however large the job gets. Hold that thought.
+Both expressions are bounded above. `(gpus - 1) / gpus` and
+`(nodes - 1) / nodes` increase towards 1 as GPUs are added, so under either
+algorithm the volume moved per GPU converges to **two payloads and never
+exceeds it**, however many GPUs participate. This bound is what produces the
+flat tail of the chart below.
 
-This is exact for inference, where `denoiser` and `gradient` each fire one
-`all_reduce` per iteration; training's sections mix in other messages the
-formula cannot count, so the chart below is inference only.
+The byte counts are exact for inference, where `denoiser` and `gradient` each
+issue exactly one `all_reduce` per iteration. Training's sections carry
+additional messages the formula does not account for, so the chart is
+restricted to inference.
 
 <ResultChart
   id="communication-bandwidth"
@@ -583,7 +633,7 @@ payloads, so it flattens out too, just at a lower level.
 
 ## Conclusions
 
-**"Communication" is not one thing, and this study is a clean illustration of
+**"Communication" is not one thing, and this study is an illustration of
 why that distinction matters.** Splitting it into transfer and wait exposes
 two different failure modes, each with its own remedy — and this study finds
 a clear example of each, playing out in different sections.

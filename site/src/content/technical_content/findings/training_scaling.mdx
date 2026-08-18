@@ -1,5 +1,5 @@
 ---
-title: "Training at scale: the memory wall comes first"
+title: "Scaling distributed training for inverse problems"
 description: "Why large-scale training is bounded by memory rather than compute, what activation checkpointing buys, and how the resulting runs scale across GPUs."
 eyebrow: "Training scaling"
 featured: true
@@ -37,6 +37,44 @@ export const configHref = (name) =>
   worth asking.
 </p>
 
+The setting is the one used throughout this benchmark: a distributed solver for
+large-scale inverse problems. Reconstruction alternates a physics step — a
+gradient through the acquisition model — with a denoising step supplied by a
+learned prior. Because a single image or volume does not fit on one device,
+the data is divided into
+overlapping patches distributed across ranks, which synchronize with an
+`all_reduce` on every step. Both questions below — how much memory one training
+step costs, and how the step time behaves as ranks are added — are asked inside
+that architecture, and the answers are properties of it rather than of the
+network alone.
+
+## The algorithm being trained
+
+Reconstruction is a short loop. Starting from an initial estimate $x^0$, each
+step first moves the image towards agreement with the measurements — a gradient
+step on the data-fidelity term — and then cleans the result with a denoiser $D_\theta$ acting as the image
+prior:
+
+$$
+\begin{aligned}
+z^k &= x^k-\gamma_k\nabla f(x^k),\\
+x^{k+1} &= D_\theta(z^k,\sigma_k),
+\end{aligned}
+\qquad k=0,\ldots,K-1.
+$$
+
+This is the plug-and-play (PnP) iteration, and running it with a fixed denoiser
+is what inference does. *Unrolling* means fixing the number of steps at $K$,
+treating the whole chain as a single network of depth $K$, and training it
+end-to-end: the denoiser weights $\theta$, together with the per-step size
+$\gamma_k$ and noise level $\sigma_k$, are fitted so that the final iterate
+$x^K$ matches a reference image.
+
+That is where the memory cost comes from. The gradient of the training
+objective flows back through all $K$ steps, so nothing can be released early:
+every step's activations stay resident until the backward pass reaches them.
+The runs on this page use $K=5$ with a DRUNet denoiser.
+
 ## The wall is set by the data, not the model
 
 The intuition that memory is a function of model size is the wrong one here.
@@ -58,10 +96,9 @@ Two things then act as multipliers on top of that base:
 
 - **Model size.** A deeper or wider network means more feature maps per
   forward pass, each one already large because the data is large.
-- **Unrolling.** An unrolled solver runs the whole forward pass once per
-  unrolled iteration and differentiates through all of them, so the resident
-  footprint scales with the iteration count. Everything below uses DRUNet with
-  **five** unrolled iterations, which multiplies the base cost fivefold.
+- **Unrolling.** The footprint scales with the number of unrolled steps $K$,
+  since each step keeps its own activations alive until the backward pass
+  reaches it. At $K=5$ that multiplies the base cost fivefold.
 
 The runs on this page are 2D images from 1024×1024 to 8192×8192, on Tesla
 V100-SXM2 cards with **32 GB** of memory, four per node. The solver is DRUNet
