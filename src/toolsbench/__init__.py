@@ -31,12 +31,22 @@ def main(argv: list[str] | None = None) -> int:
         from toolsbench.visualization.cli import main as visualization_main
 
         return visualization_main("vizwebsite", argv[1:])
+    if argv[:1] == ["prepareweights"]:
+        from toolsbench.utils import download_denoiser_weights
+
+        try:
+            download_denoiser_weights(argv[1:] or None)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+        return 0
 
     print(
         "toolsbench installs shared benchmark utilities. "
         "Run benchmarks with `benchopt run <benchmark_path>` or create "
         "visualizations with `toolsbench vizinference --help` or "
         "`toolsbench viztraining --help`. Generate website result data with "
-        "`toolsbench vizwebsite --help`."
+        "`toolsbench vizwebsite --help`. Cache pretrained denoiser weights "
+        "for offline compute nodes with `toolsbench prepareweights [name ...]`."
     )
     return 0

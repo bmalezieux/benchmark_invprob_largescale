@@ -26,12 +26,19 @@ login node, which does have network access, before submitting:
 Preparation is cached by BenchOpt, so this is a one-time cost per dataset. See
 :doc:`use_cases/index` for per-dataset preparation details.
 
-**Denoiser weights were not cached.** Pretrained networks weights are downloaded 
-from the internet on first use (``pretrained="download"``), which blocks on an offline 
-compute node the same way an unprepared dataset does.
-``benchopt prepare`` caches these weights into the shared torch hub cache
-(``~/.cache/torch/hub/checkpoints/``) alongside the dataset inputs, so running it
-from a login node covers both.
+**Denoiser weights were not cached.** Pretrained network weights are downloaded
+from the internet on first use (``pretrained="download"``), which blocks on an
+offline compute node the same way an unprepared dataset does. ``benchopt
+prepare`` does not cover these: it only calls ``Dataset.prepare()``, and the
+denoiser is chosen by the solver. Cache them from a login node with:
+
+.. code-block:: bash
+
+   toolsbench prepareweights           # every architecture that has weights
+   toolsbench prepareweights drunet    # or only the ones you need
+
+This downloads the checkpoints into the shared torch hub cache
+(``~/.cache/torch/hub/checkpoints/``) and is a no-op once they are present.
 
 
 **The job is not actually running.** A "hang" is often a job still sitting in
