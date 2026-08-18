@@ -23,16 +23,21 @@ solver:
       init_method: ["pseudo_inverse"]
       profiler_mode: torch
       slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_physics, distribute_denoiser, patch_size, overlap, max_batch_size, denoiser_sigma, denoiser_lambda_relaxation: [
+        ["gpu:1", 1, 1,true, true, [8,256,256], [2,16,16], 4, 0.03, 40.0],
         ["gpu:2", 2, 1,true, true, [8,256,256], [2,16,16], 4, 0.03, 40.0],
         ["gpu:4", 4, 1, true, true, [8,256,256], [2,16,16], 4, 0.03, 40.0],
         ["gpu:4", 4, 2, true, true, [8,256,256], [2,16,16], 4, 0.03, 40.0],
         ["gpu:4", 4, 4, true, true, [8,256,256], [2,16,16], 4, 0.03, 40.0],
+        ["gpu:4", 4, 8, true, true, [8,256,256], [2,16,16], 4, 0.03, 40.0],
+        ["gpu:4", 4, 16, true, true, [8,256,256], [2,16,16], 4, 0.03, 40.0],
+
+
         
       ]
 
 
 # Run parameters
-max-runs: 6
+max-runs: 10
 n-repetitions: 1
 plot: true
 html: true

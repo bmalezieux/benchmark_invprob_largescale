@@ -63,7 +63,7 @@ def create_compile_speedup_visualizations(
     if "objective_total_time_sec" not in df.columns:
         raise ValueError("Results are missing 'objective_total_time_sec'.")
 
-    summary = _compile_summary(df)
+    summary = compile_summary(df)
 
     output_path = Path(output_dir) / f"compile_speedup_{results_path.stem}"
     output_path.mkdir(parents=True, exist_ok=True)
@@ -99,7 +99,7 @@ def _per_run_timings(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _compile_summary(df: pd.DataFrame) -> pd.DataFrame:
+def compile_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate per-run timings into mean/std across repetitions, with speedup."""
     per_run = _per_run_timings(df)
     if per_run.empty:
@@ -210,7 +210,7 @@ def _area(size) -> int:
     return prod
 
 
-def _load_denoiser_df(results: str | Path) -> tuple[pd.DataFrame, Path]:
+def load_denoiser_df(results: str | Path) -> tuple[pd.DataFrame, Path]:
     """Load the denoiser parquet directly.
 
     Unlike :func:`load_results`, this does not assume a scalar square
@@ -238,7 +238,7 @@ def _gpu_series(df: pd.DataFrame) -> pd.Series:
     return df["p_solver_slurm_constraint"].fillna(UNKNOWN_GPU).astype(str)
 
 
-def _denoiser_summary(df: pd.DataFrame) -> pd.DataFrame:
+def denoiser_summary(df: pd.DataFrame) -> pd.DataFrame:
     """One row per (gpu, denoiser, shape, dim) with eager/compiled time and speedup.
 
     ``gpu`` is a grouping key, not a cosmetic label: without it the eager and
@@ -498,11 +498,11 @@ def create_denoiser_compile_visualizations(
 ) -> Path:
     """Create denoiser eager-vs-compiled speedup (and optional roofline) figures."""
     configure_matplotlib()
-    df, results_path = _load_denoiser_df(results)
+    df, results_path = load_denoiser_df(results)
     if "objective_denoise_time_sec" not in df.columns:
         raise ValueError("Results are missing 'objective_denoise_time_sec'.")
 
-    summary = _denoiser_summary(df)
+    summary = denoiser_summary(df)
     if summary.empty:
         raise ValueError("No timed denoiser iterations found for speedup comparison.")
 

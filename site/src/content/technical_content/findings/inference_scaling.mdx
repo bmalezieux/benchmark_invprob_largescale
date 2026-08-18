@@ -8,16 +8,16 @@ landingSection: "findings"
 -------------------
 
 import ResultChart from "../../../components/results/ResultChart.astro";
-import communicationData from "../../../data/results/inference_scaling/communication-scaling.json";
 import efficiencyData from "../../../data/results/inference_scaling/scaling-efficiency.json";
 import qualityData from "../../../data/results/inference_scaling/quality-preservation.json";
 import timingData from "../../../data/results/inference_scaling/timing-breakdown.json";
 import {
-communicationScalingSpec,
 efficiencySpec,
 qualityPreservationSpec,
 timingBreakdownSpec,
 } from "../../../lib/results/inferenceScalingCharts";
+
+export const commHref = `${import.meta.env.BASE_URL}findings/communication/`;
 
 <p class="lead">
   Distributing an inverse-problem solver across many GPUs makes it possible to
@@ -41,7 +41,7 @@ to answer three practical questions:
    computation itself or by communication and synchronization?**
 
 We first verify that distributed execution preserves the reconstruction trajectory.
-We then study how iteration time decreases as additional GPUs are added, before analyzing parallel efficiency and finally separating computation from communication to understand what limits scaling.
+We then study how iteration time decreases as additional GPUs are added, before analyzing parallel efficiency and separating out the additional work introduced by overlapping tiles. Computation and communication are separated on <a href={commHref}>the communication page</a>.
 
 
 ## Experimental setting
@@ -62,8 +62,8 @@ with eight acquisition operators. We reconstruct RGB images with side lengths
 of 2048, 4096, and 8192 pixels on Tesla V100-SXM2 GPUs with 32 GB of memory,
 using four GPUs per node.
 
-Distributed denoising uses an inner tile size of 448 × 448 pixels, surrounded by
-a 32-pixel halo on each side. Up to 32 tiles are processed in one batch. The full
+Distributed denoising uses an inner tile size of 512 × 512 pixels, surrounded by
+a 32-pixel halo on each side. Up to four tiles are processed in one batch. The full
 experiment configuration is available in
 `benchmark_inference/configs/experiments/strong_scaling_inference.yml`.
 
@@ -72,7 +72,12 @@ two iterations to avoid initialization and warm-up effects.
 The quality comparison includes initialization (iteration 0) and
 every PnP iteration from 1 to 10. The 2048² and 4096² experiments include a
 non-distributed single-GPU reference. The 8192² image does not fit in the corresponding single-GPU configuration, so its scaling study
-starts from two GPUs.
+starts from four GPUs.
+
+The measured iteration time also covers the benchmark's own per-iteration PSNR,
+SSIM, and MSE evaluation on the full reconstruction. This is measurement rather
+than reconstruction, so it is reported as a separate band and excluded from the
+efficiency analysis.
 
 ## Can distributed inference preserve quality and provide useful speedups?
 
@@ -121,15 +126,15 @@ trajectory, we can now evaluate its computational performance.
 
 The figure below shows the average time spent in each stage of one
 steady-state plug-and-play iteration, separating the acquisition physics,
-learned denoising, and remaining distributed overhead.
+learned denoising, and the per-iteration metric evaluation.
 
 <ResultChart
   id="inference-time-breakdown"
   title="Larger reconstructions continue to benefit from additional GPUs"
-  description="Mean steady-state iteration time for three image sizes. Each stacked area separates the acquisition physics, learned denoising, and residual overhead. Each image size uses its own vertical scale."
+  description="Mean steady-state iteration time for three image sizes. Each stacked area separates the acquisition physics, learned denoising, and the metric evaluation. Each image size uses its own vertical scale."
   values={timingData.values}
   spec={timingBreakdownSpec}
-  note="Values are averaged over iterations 3–10. The single-GPU 2048² and 4096² runs evaluate the full image directly, while multi-GPU runs use overlapping tiles. The 8192² experiment starts from two GPUs because the corresponding single-GPU configuration is not feasible."
+  note="Values are averaged over iterations 3–10. The single-GPU 2048² and 4096² runs evaluate the full image directly, while multi-GPU runs use overlapping tiles. The 8192² experiment starts from four GPUs because the corresponding single-GPU configuration is not feasible. The metric band is the benchmark's own PSNR/SSIM/MSE evaluation, not solver work."
   tableColumns={[
     { key: "imageSize", label: "Image side", digits: 0 },
     { key: "gpuCount", label: "GPUs", digits: 0 },
@@ -137,7 +142,7 @@ learned denoising, and remaining distributed overhead.
     { key: "workMultiplier", label: "Tile work", digits: 3 },
     { key: "physicsSec", label: "Physics (s)", digits: 4 },
     { key: "denoisingSec", label: "Denoising (s)", digits: 4 },
-    { key: "overheadSec", label: "Overhead (s)", digits: 4 },
+    { key: "overheadSec", label: "Metrics (s)", digits: 4 },
     { key: "totalSec", label: "Total (s)", digits: 4 },
   ]}
 />
@@ -149,8 +154,10 @@ configuration, reaches sub-second iteration times on 64 GPUs while continuing
 to improve throughout the explored scaling range.
 
 Smaller problems exhibit the expected saturation behavior. The 2048²
-reconstruction accelerates significantly as GPUs are added, but improvements
-become marginal beyond approximately 32 GPUs because each worker receives too
+reconstruction accelerates significantly as GPUs are added, and its scaling study
+stops at four GPUs, where each worker already holds only about one megapixel of
+useful image. The 4096² problem shows the same effect from eight GPUs onwards,
+because each worker receives too
 little computation to fully amortize distributed overhead. Larger images, by
 contrast, maintain enough local work to keep additional GPUs productive.
 
@@ -180,8 +187,8 @@ E_{\mathrm{absolute}}(N)
 \frac{T_{N_0}N_0}{T_NN},
 $$
 
-where \(T_N\) is the measured iteration time on \(N\) GPUs and the baseline
-configuration uses \(N_0\) GPUs. An efficiency of 100% corresponds to ideal
+where $T_N$ is the measured iteration time on $N$ GPUs and the baseline
+configuration uses $N_0$ GPUs. An efficiency of 100% corresponds to ideal
 strong scaling, while lower values indicate that additional GPUs provide
 progressively smaller reductions in runtime.
 
@@ -191,7 +198,7 @@ progressively smaller reductions in runtime.
   description="Efficiency relative to the smallest feasible GPU configuration for each image size. The dashed line represents ideal strong scaling."
   values={efficiencyData.values}
   spec={efficiencySpec("absoluteEfficiencyPct", "Absolute efficiency (%)")}
-  note="The 2048² and 4096² curves use the non-distributed one-GPU run as their baseline. The 8192² curve uses two GPUs because the corresponding single-GPU configuration is not feasible."
+  note="The 2048² and 4096² curves use the non-distributed one-GPU run as their baseline. The 8192² curve uses four GPUs because the corresponding single-GPU configuration is not feasible."
   tableColumns={[
     { key: "imageSize", label: "Image side", digits: 0 },
     { key: "gpuCount", label: "GPUs", digits: 0 },
@@ -204,20 +211,20 @@ progressively smaller reductions in runtime.
 The expected trend immediately appears: larger images remain efficient over a
 much wider range of GPU counts than smaller ones.
 
-For the 2048² reconstruction, efficiency decreases rapidly as the image is
-divided among more workers. Although runtime continues to improve up to around
-32 GPUs, each additional GPU contributes progressively less because the local
-amount of work becomes too small to fully amortize communication and
-synchronization costs.
+For the 2048² reconstruction, efficiency drops to 78.2% as soon as the image is
+divided between two workers and stays there at four, because the local amount of
+work becomes too small to fully amortize communication and synchronization costs.
 
-The 4096² reconstruction remains efficient over a larger range, while the
-8192² reconstruction continues to scale well throughout the experiment. These
+The 4096² reconstruction remains efficient over a larger range, holding 76.6% at
+four GPUs before falling to 64.4% at eight and 60.1% at sixteen, while the
+8192² reconstruction stays at 95.0% on eight GPUs and 79.8% on sixteen before
+decaying to 45.7% on sixty-four. These
 results reinforce the main observation from the timing measurements: **the
 usefulness of additional GPUs is primarily determined by the amount of work
 assigned to each worker.**
 
 At first sight, however, the initial efficiency values may appear surprisingly
-low. For example, the 4096² reconstruction reaches only about 63% efficiency
+low. For example, the 4096² reconstruction reaches only about 79% efficiency
 when moving from one GPU to two GPUs. This apparent loss is largely explained by
 an important difference between the reference and distributed executions.
 
@@ -248,7 +255,7 @@ E_{\mathrm{absolute}}(N)
 \frac{W_N}{W_{N_0}},
 $$
 
-where \(W_N\) denotes the amount of halo-padded image data processed by the
+where $W_N$ denotes the amount of halo-padded image data processed by the
 denoiser relative to the useful image area.
 
 This normalization does not assume that inference time is perfectly
@@ -276,12 +283,13 @@ work introduced purely by the tiling geometry.
 
 The normalized curves reveal that most of the apparent efficiency loss at low
 GPU counts is simply the cost of processing overlapping halos. For the 4096²
-problem, the two-GPU efficiency increases from 62.7% to nearly 98% after
+problem, the two-GPU efficiency increases from 79.3% to 100.4% after
 normalization, showing that the distributed implementation itself remains close
 to ideal.
 
 The same effect is observed for the 2048² reconstruction, where the normalized
-efficiency slightly exceeds 100%. This should not be interpreted as superlinear
+efficiency reaches 99.0%. The 4096² value slightly exceeding 100% should not be
+interpreted as superlinear
 scaling of the overall algorithm. Rather, it indicates that a simple
 pixel-count correction cannot perfectly model every implementation detail, such
 as differences in neural-network batching, GPU occupancy, or kernel selection.
@@ -300,89 +308,9 @@ to extend the range over which distributed inference scales efficiently.
 
 
 
-## Where does the remaining overhead come from?
-
-The efficiency analysis shows that scaling eventually becomes less effective as
-the number of GPUs increases. This naturally raises the next question: **what is
-actually limiting performance?**
-
-One possibility is that the computations themselves stop scaling. Another is
-that communication and synchronization progressively dominate the execution as
-less work remains on each GPU.
-
-To distinguish between these effects, we profiled a second set of experiments
-using the PyTorch profiler, separating CUDA kernels performing useful
-computation from those associated with distributed communication.
-
-The 2D experiment uses the same 4096² multi-frame super-resolution problem as
-the previous sections, while the 3D experiment reconstructs a simulated 512³
-volume. Both experiments were executed on Tesla V100 GPUs using up to 64 GPUs.
-
-The reported quantities are diagnostics extracted from the profiler rather than
-a decomposition of the total iteration time. Compute and communication can
-overlap, and synchronization outside the measured sections is reported
-independently.
-
-<ResultChart
-id="inference-communication-scaling"
-title="Computation continues to scale while communication becomes increasingly visible"
-description="Top: compute speedup relative to the smallest distributed configuration. Bottom: CUDA time attributed to computation and communication."
-values={communicationData.values}
-spec={communicationScalingSpec}
-note="Measurements are averaged over steady-state iterations after excluding the initial warm-up. The 2D distributed baseline uses one GPU, while the 3D baseline uses two GPUs."
-tableColumns={[
-{ key: "problem", label: "Problem" },
-{ key: "gpuCount", label: "GPUs", digits: 0 },
-{ key: "nodeCount", label: "Nodes", digits: 0 },
-{ key: "mode", label: "Mode" },
-{ key: "computeCudaSec", label: "Compute (s)", digits: 4 },
-{ key: "communicationCudaSec", label: "Comm. (s)", digits: 4 },
-{ key: "communicationSharePct", label: "Comm. share (%)", digits: 1 },
-]}
-/>
-
-The first observation is reassuring: the compute kernels themselves continue to
-scale almost ideally throughout the experiments.
-
-For the 2D reconstruction, the compute portion accelerates by a factor of 54.4
-between one and 64 GPUs, close to the ideal speedup of 64. The 3D experiment is
-even closer to ideal, reaching a 31× acceleration between two and 64 GPUs,
-compared with the theoretical value of 32.
-
-This confirms that the computational building blocks of the distributed solver
-remain highly scalable. The decreasing end-to-end efficiency observed in the
-previous section is therefore not caused by the computation itself becoming
-inefficient.
-
-The second observation is that communication gradually occupies a larger
-fraction of the execution.
-
-This does **not** necessarily mean that communication becomes dramatically more
-expensive. Instead, useful computation is reduced much faster than
-communication. As the local workload assigned to each GPU decreases, the fixed
-cost of exchanging halo regions and synchronizing workers represents an
-increasing fraction of the remaining iteration time.
-
-The effect is clearly visible for the 2D problem. Communication accounts for
-only a small portion of the CUDA activity at low GPU counts, but approaches half
-of the profiled execution at 64 GPUs as the compute kernels become extremely
-short.
-
-The 3D experiment behaves differently. Although the absolute communication time
-is larger because considerably more data must be exchanged, each GPU also
-performs substantially more local computation. Communication therefore remains a
-relatively small fraction of the execution, allowing the reconstruction to
-maintain excellent scaling even at the largest GPU counts.
-
-Together with the previous efficiency measurements, these results indicate that
-the current implementation is fundamentally compute-efficient. The main scaling
-limitations appear once communication, synchronization, and other distributed
-overheads become comparable to the shrinking amount of useful work performed by
-each GPU.
-
-Future analyses will investigate these communication patterns in greater detail,
-including which collective operations dominate execution and how their cost
-depends on the reconstruction algorithm and hardware configuration.
+The remaining cost — what is real data transfer and what is ranks waiting on
+each other — is profiled on <a href={commHref}>the communication page</a>,
+which uses the same solver.
 
 ## Conclusions
 

@@ -11,7 +11,10 @@ from toolsbench.visualization.common import (
     load_training_summary,
     make_output_path,
     problem_size_title,
-    plot_training_strong_scaling,
+)
+from toolsbench.visualization.scaling import (
+    plot_strong_scaling_efficiency,
+    plot_weak_scaling_by_workload,
 )
 
 
@@ -33,9 +36,18 @@ def create_strong_scaling_visualizations(
             str(int(batch_size)) for batch_size in batch_sizes
         )
     title = f"Training Strong Scaling Efficiency - {batch_label}"
-    plot_training_strong_scaling(
+    plot_strong_scaling_efficiency(
         summary,
         output_path,
+        group_col="training_image_size",
+        distribute_col="p_solver_distribute_model",
         title=f"{title}\n{problem_size_title(summary)}",
+    )
+    plot_weak_scaling_by_workload(
+        summary,
+        output_path,
+        distribute_col="p_solver_distribute_model",
+        mpix_col="training_mpix",
+        title=f"Training Weak Scaling Runtime Ratio\n{problem_size_title(summary)}",
     )
     return output_path

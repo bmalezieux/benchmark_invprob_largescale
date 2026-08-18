@@ -1,0 +1,159 @@
+{
+  "id": "training-batch-size",
+  "methodology": {
+    "baseline": {
+      "gpuCount": 1,
+      "maxBatchSize": 16,
+      "rationale": "one baseline shared by every series, so the curves are comparable in absolute terms rather than only within a series; a per-GPU-count baseline would pin every curve to the same start and hide the batch-size effect",
+      "timeSec": 91.627098
+    },
+    "checkpointing": "always, for every run in this experiment",
+    "deviceMemoryMb": 32768,
+    "efficiency": "100 x baseline step time x baselineGpuCount / (gpuCount x step time)",
+    "independentRepetitions": 1,
+    "maxBatchSize": "how many of a rank's patches go through the denoiser together; the patch grid is unchanged, so a step does the same total work at every batch size \u2014 this is a utilization knob, not more data"
+  },
+  "provenance": {
+    "config": "benchmark_training/configs/experiments/batch_size.yml",
+    "source": "result_benchmark/benchmark_training/batch_size/benchopt_run_2026-08-06_21h34m40.parquet",
+    "sourceSha256": "1b0ed4492b546a6c27cd2490053d556d8ac8f5e756158da3be830ae04273942c"
+  },
+  "schemaVersion": 1,
+  "values": [
+    {
+      "efficiencyPct": 78.512579,
+      "forwardPeakMemoryMb": 12309.718262,
+      "gpuCount": 1,
+      "maxBatchSize": 1,
+      "peakMemoryGb": 12.021209,
+      "peakMemoryMb": 12309.718262,
+      "timeSec": 116.703716
+    },
+    {
+      "efficiencyPct": 78.360879,
+      "forwardPeakMemoryMb": 5683.44873,
+      "gpuCount": 4,
+      "maxBatchSize": 1,
+      "peakMemoryGb": 6.141288,
+      "peakMemoryMb": 6288.678711,
+      "timeSec": 29.232411
+    },
+    {
+      "efficiencyPct": 67.084831,
+      "forwardPeakMemoryMb": 5454.63623,
+      "gpuCount": 16,
+      "maxBatchSize": 1,
+      "peakMemoryGb": 5.85749,
+      "peakMemoryMb": 5998.069336,
+      "timeSec": 8.536496
+    },
+    {
+      "efficiencyPct": 77.652411,
+      "forwardPeakMemoryMb": 12311.877441,
+      "gpuCount": 1,
+      "maxBatchSize": 2,
+      "peakMemoryGb": 12.386542,
+      "peakMemoryMb": 12683.818848,
+      "timeSec": 117.996463
+    },
+    {
+      "efficiencyPct": 76.790071,
+      "forwardPeakMemoryMb": 5689.47998,
+      "gpuCount": 4,
+      "maxBatchSize": 2,
+      "peakMemoryGb": 6.758824,
+      "peakMemoryMb": 6921.036133,
+      "timeSec": 29.830386
+    },
+    {
+      "efficiencyPct": 66.286481,
+      "forwardPeakMemoryMb": 5460.97998,
+      "gpuCount": 16,
+      "maxBatchSize": 2,
+      "peakMemoryGb": 6.475499,
+      "peakMemoryMb": 6630.911133,
+      "timeSec": 8.639309
+    },
+    {
+      "efficiencyPct": 86.202225,
+      "forwardPeakMemoryMb": 12309.374023,
+      "gpuCount": 1,
+      "maxBatchSize": 4,
+      "peakMemoryGb": 13.759811,
+      "peakMemoryMb": 14090.046387,
+      "timeSec": 106.293194
+    },
+    {
+      "efficiencyPct": 86.481939,
+      "forwardPeakMemoryMb": 5681.808105,
+      "gpuCount": 4,
+      "maxBatchSize": 4,
+      "peakMemoryGb": 8.137921,
+      "peakMemoryMb": 8333.231445,
+      "timeSec": 26.487351
+    },
+    {
+      "efficiencyPct": 72.799894,
+      "forwardPeakMemoryMb": 5453.54248,
+      "gpuCount": 16,
+      "maxBatchSize": 4,
+      "peakMemoryGb": 7.853528,
+      "peakMemoryMb": 8042.012695,
+      "timeSec": 7.866349
+    },
+    {
+      "efficiencyPct": 86.594331,
+      "forwardPeakMemoryMb": 12307.218262,
+      "gpuCount": 1,
+      "maxBatchSize": 8,
+      "peakMemoryGb": 16.505814,
+      "peakMemoryMb": 16901.953613,
+      "timeSec": 105.81189
+    },
+    {
+      "efficiencyPct": 88.187299,
+      "forwardPeakMemoryMb": 6130.434082,
+      "gpuCount": 4,
+      "maxBatchSize": 8,
+      "peakMemoryGb": 10.881314,
+      "peakMemoryMb": 11142.46582,
+      "timeSec": 25.97514
+    },
+    {
+      "efficiencyPct": 74.829969,
+      "forwardPeakMemoryMb": 5858.465332,
+      "gpuCount": 16,
+      "maxBatchSize": 8,
+      "peakMemoryGb": 10.583066,
+      "peakMemoryMb": 10837.05957,
+      "timeSec": 7.652941
+    },
+    {
+      "efficiencyPct": 100.0,
+      "forwardPeakMemoryMb": 12874.854004,
+      "gpuCount": 1,
+      "maxBatchSize": 16,
+      "peakMemoryGb": 23.096441,
+      "peakMemoryMb": 23650.755859,
+      "timeSec": 91.627098
+    },
+    {
+      "efficiencyPct": 90.816225,
+      "forwardPeakMemoryMb": 7167.961426,
+      "gpuCount": 4,
+      "maxBatchSize": 16,
+      "peakMemoryGb": 17.459268,
+      "peakMemoryMb": 17878.290039,
+      "timeSec": 25.223218
+    },
+    {
+      "efficiencyPct": 80.178879,
+      "forwardPeakMemoryMb": 6894.835938,
+      "gpuCount": 16,
+      "maxBatchSize": 16,
+      "peakMemoryGb": 17.040134,
+      "peakMemoryMb": 17449.097168,
+      "timeSec": 7.142397
+    }
+  ]
+}

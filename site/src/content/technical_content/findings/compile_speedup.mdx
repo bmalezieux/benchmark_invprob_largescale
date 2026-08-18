@@ -1,0 +1,264 @@
+---
+title: "torch.compile: what it wins and where to put it"
+description: "Denoiser and end-to-end PnP speedups from torch.compile, and why where you apply it matters as much as whether you do."
+eyebrow: "Compile speedup"
+featured: true
+pageType: "article"
+landingSection: "findings"
+-------------------
+
+import ResultChart from "../../../components/results/ResultChart.astro";
+import denoiserSpeedupData from "../../../data/results/compile_speedup/denoiser-speedup.json";
+import rooflineData from "../../../data/results/compile_speedup/roofline-h100.json";
+import pnpCompileModesData from "../../../data/results/compile_speedup/pnp-compile-modes.json";
+import {
+denoiserSpeedupSpec,
+denoiserRooflineSpec,
+pnpCompileModesSpec,
+} from "../../../lib/results/compileCharts";
+
+export const repo = "https://github.com/numpex/benchmark_invprob_largescale/blob/main/";
+export const configHref = (name) =>
+  `${repo}benchmark_inference/configs/experiments/${name}`;
+
+<p class="lead">
+  <code>torch.compile</code> trades a one-time graph-compilation cost for a
+  faster steady state. That trade is worth it whenever a model runs for many
+  iterations — but the size of the win, and even whether it appears at all,
+  depends on the architecture being compiled and on exactly which module
+  <code>torch.compile</code> wraps.
+</p>
+
+**What is <code>torch.compile</code>, and why use it?** By default, PyTorch
+runs a model in "eager mode": every operation (every matrix multiply,
+convolution, addition, ...) is dispatched to the GPU one at a time, exactly
+as your Python code calls it. This is flexible and easy to debug, but it
+leaves performance on the table — each operation is a separate GPU kernel
+launch, with overhead, and intermediate results are written to and read back
+from GPU memory between every step even when several operations could be
+fused into one. <code>torch.compile</code> (introduced in PyTorch 2.0) looks
+at the model once, builds a computation graph out of it, and generates
+optimized GPU kernels for that graph — fusing operations together and
+cutting out unnecessary memory traffic. Building that optimized version takes
+extra time the first time it runs (the "1st iteration" or "compile" cost
+below), but every call after that reuses the compiled kernels and runs
+faster. Whether this trade is worth it, and how much it wins, is exactly what
+we measure here.
+
+This study measures that trade in two settings: a standalone denoiser swept
+across architectures, GPUs, and problem sizes, and a full distributed
+plug-and-play (PnP) reconstruction where <code>torch.compile</code> can be
+applied at different points in the pipeline.
+
+We look at three questions:
+
+1. **How much steady-state speedup does compiling a denoiser actually give,
+   and does it depend on the architecture or the GPU?**
+2. **Why does the speedup vary so much between architectures?**
+3. **For a distributed PnP solver, does *where* you apply
+   <code>torch.compile</code> matter?**
+
+## Experimental setting
+
+The denoiser sweep runs three architectures (DnCNN, DRUNet, UNet) eager and
+compiled, across 2D shapes (512/1024/2048) and 3D shapes (128³, 8×512×512,
+16×512×512), on A100 and H100 GPUs. What we measure is deliberately narrow:
+**one forward pass of the denoiser** — no physics, no reconstruction loop —
+timed at each image size, so the compile effect is isolated to the network
+itself rather than mixed with anything else. The compiled arm is
+<code>compile="pre"</code> with <code>fullgraph=True</code> and
+<code>mode="max-autotune"</code>, on a single non-distributed GPU — with no
+distributed wrapper present, <code>pre</code> here just means "compiled".
+Steady-state timing averages the last 5 timed denoiser calls per
+configuration.
+
+The PnP sweep reconstructs a 4096² 2D tomography problem (100 projection
+angles) with DRUNet, on 1 and 2 GPUs, across four compile configurations:
+<code>None</code> (eager), <code>pre</code>, <code>post</code>, and
+<code>fused</code> — described in detail in the third section below.
+First-iteration timing includes the one-time compilation cost;
+stable-iteration timing is the mean of the last 5 timed iterations.
+
+Two benchmark configurations produce everything below. They both live in
+`benchmark_inference/configs/experiments/`, and each figure on this page names
+the one it came from:
+
+| Configuration | Problem | What it sweeps | Sections |
+|---|---|---|---|
+| <a href={configHref("denoiser_compile.yml")}><code>denoiser_compile.yml</code></a> | Simulated images, 3 channels, σ = 0.1 | DnCNN / DRUNet / UNet × 2D 512, 1024, 2048 and 3D 128³, 8×512×512, 16×512×512 × `compile` `None` vs `pre`, on A100 and H100, 1 GPU | Denoiser speedup, roofline |
+| <a href={configHref("tomography_2d_compile.yml")}><code>tomography_2d_compile.yml</code></a> | 2D tomography, 4096², 100 angles, DRUNet σ = 0.01 | `compile` `None` / `pre` / `post` / `fused` × 1 GPU (non-distributed) and 2 GPUs (patch 448, halo 32) | PnP compile modes |
+
+## How much does compiling a denoiser speed things up?
+
+<ResultChart
+  id="compile-denoiser-speedup"
+  title="Compile speedup depends far more on architecture than on GPU"
+  description="Steady-state speedup (eager / compiled) per denoiser, shape, and GPU. Circles are 2D, squares are 3D."
+  values={denoiserSpeedupData.values}
+  spec={denoiserSpeedupSpec}
+  note="One denoiser forward pass per configuration, no physics or reconstruction loop. Steady-state time averages the last 5 timed iterations. Configuration: denoiser_compile.yml."
+  tableColumns={[
+    { key: "gpu", label: "GPU" },
+    { key: "denoiser", label: "Denoiser" },
+    { key: "shape", label: "Shape" },
+    { key: "dim", label: "Dim", digits: 0 },
+    { key: "eagerSec", label: "Eager (s)", digits: 4 },
+    { key: "compiledSec", label: "Compiled (s)", digits: 4 },
+    { key: "speedup", label: "Speedup", digits: 2 },
+  ]}
+/>
+
+Performance gains vary substantially across models and hardware. UNet sees the largest improvement, reaching up to 2.4× on the H100 and 1.6× on the A100 for 2D shapes. DRUNet sits at the opposite extreme, gaining almost nothing overall: the only configuration where compiling pays off is 2D shapes on the H100 (1.6×), while every other combination — A100 with 2D, A100 with 3D, and H100 with 3D — comes in under 1.04×. 
+DnCNN falls between the two. This ranking — UNet gains most, DnCNN second, DRUNet least — holds across both GPUs; only the absolute magnitude of the speedup shifts.
+
+This also shows a **modern-architecture effect**: for the same denoiser and
+the same shape, H100 consistently gets a bigger multiplicative speedup from
+compiling than A100 does (e.g. DnCNN at 512: 1.27x on A100 vs 2.03x on H100).
+Newer hardware doesn't just run faster in eager mode — it has more headroom
+for the compiler's kernel fusion to exploit.
+
+This spread is not a hardware quirk. It comes from what each architecture
+asks the GPU to do.
+
+## Why does the gain vary so much?
+
+<ResultChart
+  id="compile-denoiser-roofline"
+  title="The compile win tracks how memory-bound the denoiser is"
+  description="Arithmetic intensity (FLOP per byte moved) vs compile speedup, on H100. The dashed vertical line is the ridge point: memory-bound to its left, compute-bound to its right."
+  values={rooflineData.values}
+  spec={denoiserRooflineSpec(rooflineData.methodology.ridgePointFlopByte)}
+  note="Ridge point = peak TF32 tensor-core TFLOPS / peak memory bandwidth TB/s for H100 (≈147 FLOP/byte). Points are the same runs shown in the previous chart, restricted to H100. Configuration: denoiser_compile.yml."
+  tableColumns={[
+    { key: "denoiser", label: "Denoiser" },
+    { key: "shape", label: "Shape" },
+    { key: "dim", label: "Dim", digits: 0 },
+    { key: "arithIntensityFlopByte", label: "FLOP/byte", digits: 1 },
+    { key: "speedup", label: "Speedup", digits: 2 },
+  ]}
+/>
+
+Most points sit left of the ridge, meaning DnCNN and UNet are clearly
+memory-bound on this hardware. DRUNet's 2D arithmetic intensity (≈178–181
+FLOP/byte) sits just *right* of the ridge (≈147) — it is already close to
+compute-bound before compiling at all, which lines up with it seeing the
+smallest gain of the three (≈1.5–1.6x on H100).
+
+Being memory-bound sets the ceiling on how much compilation can help — but it
+does not fully determine where each architecture lands under that ceiling.
+DnCNN has the *lowest* arithmetic intensity of the three (≈68 FLOP/byte,
+clearly the most memory-bound), yet it is UNet, not DnCNN, that sees the
+largest speedup (2.4x vs 2.1x on H100 2D). The 3D points make this
+especially clear: DnCNN and UNet land at *the same* arithmetic intensity
+there (≈205 FLOP/byte) but compile to very different speedups (1.14x for
+DnCNN vs 1.6x for UNet). So arithmetic intensity explains the broad
+left-to-right trend — and DRUNet's poor result in particular — but the exact
+ranking between memory-bound architectures also depends on architecture-level
+details (how many small, fusable operations each network has, for instance),
+not on arithmetic intensity alone.
+
+<p class="lead">
+  In short: <code>torch.compile</code> helps most where the model is
+  furthest from saturating the GPU's compute units, and least where it is
+  already close to it.
+</p>
+
+## For a distributed solver, does it matter *where* you compile?
+
+The denoiser experiments above compile a standalone module. A full PnP
+reconstruction is different: the denoiser sits inside a distributed wrapper
+that tiles it across GPUs, and the compiler has to be told which part of that
+pipeline to target.
+
+The PyTorch team's own guidance on this is specific:
+
+> We recommend applying `torch.compile` to the highest-level function that
+> doesn't cause excessive problems. Typically, it is your train or eval step
+> with the optimizer but without the loop, your top-level `nn.Module`, or
+> some sub-`nn.Module`s. **`torch.compile` specifically doesn't handle
+> distributed wrapper modules like DDP or FSDP very well, so consider
+> applying `torch.compile` to the inner module passed to the wrapper.**
+
+Our PnP solver exposes exactly this choice through three compile modes:
+
+- **`pre`** — `compile(denoiser/physics)`, then `distribute(...)`: compile
+  first, then wrap the already-compiled module for distribution. This is the
+  inner-module case the guidance above recommends.
+- **`post`** — `distribute(denoiser/physics)`, then `compile(...)`: wrap for
+  distribution first (this is where inter-GPU communication gets introduced),
+  then compile the already-distributed wrapper. This is the case the
+  guidance specifically warns against.
+- **`fused`** — exactly like `post` (distribute first, compile after), just
+  compiling more at once. `post` compiles the distributed denoiser and the
+  distributed physics operator separately. `fused` instead compiles the
+  *whole* per-iteration step in one region —
+  `compile(distribute(pnp_step))`, gradient update, denoiser prox, and clamp
+  all traced together. 
+
+<ResultChart
+  id="compile-pnp-modes"
+  title="Compiling before the distributed wrapper holds up better at 2 GPUs"
+  description="1st-iteration (compile) cost vs stable steady-state cost, per compile mode and GPU count."
+  values={pnpCompileModesData.values}
+  spec={pnpCompileModesSpec}
+  note="PnP reconstruction, 2D tomography, DRUNet. Stable time averages the last 5 timed iterations; 1st iteration includes graph compilation. A compile mode can fail for some configurations (compile='fused' requires norm_strategy='clip', for instance) — a missing bar means that run errored, not that it cost nothing. Configuration: tomography_2d_compile.yml."
+  tableColumns={[
+    { key: "gpuCount", label: "GPUs", digits: 0 },
+    { key: "compileMode", label: "Compile mode" },
+    { key: "firstIterSec", label: "1st iter (s)", digits: 3 },
+    { key: "stableIterSec", label: "Stable (s)", digits: 4 },
+    { key: "speedup", label: "Speedup", digits: 2 },
+  ]}
+/>
+
+At 1 GPU there is no distributed wrapper at all, so `pre`, `post`, and
+`fused` are not really three different things yet — with nothing to be
+"before" or "after", all three compile the exact same non-distributed
+denoiser and physics operators. The small spread we see there (speedup
+1.49–1.53x) is measurement noise, not a real effect of compile mode.
+
+The difference shows up once distribution is active: at 2 GPUs, `pre`
+reaches 1.98x, ahead of both `post` (1.72x) and `fused` (1.76x). This
+matches what we see testing other configurations beyond what is charted
+here: the three modes sometimes land close together, but where they
+diverge, it is `pre` that comes out ahead.
+That is consistent with the PyTorch guidance — compiling the inner module
+before it is wrapped avoids handing the compiler a distributed wrapper it
+was not designed to trace well.
+
+<code>pre</code> has a second, separate advantage visible in the same chart:
+its 1st-iteration (compile) cost is also lower once distribution is active —
+14.98s at 2 GPUs, versus 26.78s for <code>post</code> and 24.89s for
+<code>fused</code>. This follows directly from what each mode actually
+compiles: <code>pre</code> only ever compiles the denoiser acting on a single
+tile/patch, before tiling and distribution exist. <code>post</code> and
+<code>fused</code> compile *after* the distributed wrapper is in place, so
+the graph they trace has to account for the whole distributed cycle, not one
+patch — a bigger graph takes longer to compile. So <code>pre</code> is not
+just faster at steady state here; it also pays a smaller one-time cost to get
+there.
+
+
+
+## Conclusions
+
+**The compile win is architecture-dependent, not just hardware-dependent.**
+UNet gains the most from <code>torch.compile</code> (up to 2.44x on H100),
+DRUNet the least (≈1.0–1.6x), and DnCNN in between. This ranking holds on
+both A100 and H100 — only the absolute speedup shifts, and it consistently
+shifts upward on the newer H100.
+
+**Being memory-bound is necessary for a large gain, but not sufficient to
+predict the exact ranking.** DRUNet's high arithmetic intensity (already at
+or past the compute-bound ridge in 2D) correctly predicts its small gain. But
+between the two memory-bound architectures, UNet beats DnCNN despite *not*
+having the lower arithmetic intensity — in 3D they even share the same
+arithmetic intensity and still compile to different speedups. Architecture
+details beyond the roofline model also matter.
+
+**For distributed PnP, compiling the inner module before the distributed
+wrapper (<code>compile="pre"</code>) is the safer default in what we've
+measured so far.** It matches PyTorch's own guidance on avoiding compilation
+of DDP/FSDP-style wrappers, it is the mode that has held up best as GPU count
+increases, and it also compiles faster to begin with, since it only ever
+traces a single denoiser patch rather than the whole distributed cycle. 

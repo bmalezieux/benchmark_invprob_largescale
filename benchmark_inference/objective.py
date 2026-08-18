@@ -86,6 +86,7 @@ class Objective(BaseObjective):
             Dictionary with measurement, physics, and metadata.
         """
         return dict(
+            ground_truth=self.ground_truth,
             measurements=self.measurements,
             physics=self.physics,
             ground_truth_shape=self.ground_truth_shape,

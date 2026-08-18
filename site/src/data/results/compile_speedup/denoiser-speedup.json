@@ -1,0 +1,344 @@
+{
+  "id": "compile-denoiser-speedup",
+  "methodology": {
+    "comparison": "steady-state per-iteration denoiser time, compile=None (eager) vs compile=pre, mean over the last 5 timed iterations",
+    "independentRepetitions": 1,
+    "speedup": "eagerSec / compiledSec"
+  },
+  "provenance": {
+    "accelerator": null,
+    "benchmarkGitTag": null,
+    "config": null,
+    "platform": "Linux",
+    "runDate": "2026-07-16T11:00:34.436648",
+    "source": "result_benchmark/benchmark_inference/denoiser_compile/benchopt_run_2026-07-16_11h00m34.parquet",
+    "sourceSha256": "f0b568df6e4be6afeca974f7ab2138e4cd4b254c7dd886ba029087d8c5e40afd"
+  },
+  "schemaVersion": 1,
+  "values": [
+    {
+      "compiledSec": 0.008035,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "eagerSec": 0.010199,
+      "gpu": "a100",
+      "shape": "512",
+      "speedup": 1.269321
+    },
+    {
+      "compiledSec": 0.017194,
+      "denoiser": "drunet",
+      "dim": 2,
+      "eagerSec": 0.018266,
+      "gpu": "a100",
+      "shape": "512",
+      "speedup": 1.062326
+    },
+    {
+      "compiledSec": 0.007188,
+      "denoiser": "unet",
+      "dim": 2,
+      "eagerSec": 0.011547,
+      "gpu": "a100",
+      "shape": "512",
+      "speedup": 1.606433
+    },
+    {
+      "compiledSec": 0.027473,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "eagerSec": 0.037237,
+      "gpu": "a100",
+      "shape": "1024",
+      "speedup": 1.355383
+    },
+    {
+      "compiledSec": 0.062764,
+      "denoiser": "drunet",
+      "dim": 2,
+      "eagerSec": 0.06484,
+      "gpu": "a100",
+      "shape": "1024",
+      "speedup": 1.033075
+    },
+    {
+      "compiledSec": 0.023354,
+      "denoiser": "unet",
+      "dim": 2,
+      "eagerSec": 0.03807,
+      "gpu": "a100",
+      "shape": "1024",
+      "speedup": 1.630105
+    },
+    {
+      "compiledSec": 0.10376,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "eagerSec": 0.139168,
+      "gpu": "a100",
+      "shape": "2048",
+      "speedup": 1.341252
+    },
+    {
+      "compiledSec": 0.24412,
+      "denoiser": "drunet",
+      "dim": 2,
+      "eagerSec": 0.253781,
+      "gpu": "a100",
+      "shape": "2048",
+      "speedup": 1.039572
+    },
+    {
+      "compiledSec": 0.092152,
+      "denoiser": "unet",
+      "dim": 2,
+      "eagerSec": 0.152229,
+      "gpu": "a100",
+      "shape": "2048",
+      "speedup": 1.651923
+    },
+    {
+      "compiledSec": 0.104445,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "eagerSec": 0.117565,
+      "gpu": "a100",
+      "shape": "128\u00b3",
+      "speedup": 1.125612
+    },
+    {
+      "compiledSec": 0.107152,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "eagerSec": 0.119987,
+      "gpu": "a100",
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 1.119788
+    },
+    {
+      "compiledSec": 0.155622,
+      "denoiser": "drunet",
+      "dim": 3,
+      "eagerSec": 0.157295,
+      "gpu": "a100",
+      "shape": "128\u00b3",
+      "speedup": 1.010749
+    },
+    {
+      "compiledSec": 0.307996,
+      "denoiser": "drunet",
+      "dim": 3,
+      "eagerSec": 0.307032,
+      "gpu": "a100",
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 0.99687
+    },
+    {
+      "compiledSec": 0.055686,
+      "denoiser": "unet",
+      "dim": 3,
+      "eagerSec": 0.082353,
+      "gpu": "a100",
+      "shape": "128\u00b3",
+      "speedup": 1.478864
+    },
+    {
+      "compiledSec": 0.055984,
+      "denoiser": "unet",
+      "dim": 3,
+      "eagerSec": 0.082478,
+      "gpu": "a100",
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 1.473249
+    },
+    {
+      "compiledSec": 0.217339,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "eagerSec": 0.23919,
+      "gpu": "a100",
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.100535
+    },
+    {
+      "compiledSec": 0.304984,
+      "denoiser": "drunet",
+      "dim": 3,
+      "eagerSec": 0.312011,
+      "gpu": "a100",
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.023041
+    },
+    {
+      "compiledSec": 0.113637,
+      "denoiser": "unet",
+      "dim": 3,
+      "eagerSec": 0.16351,
+      "gpu": "a100",
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.438885
+    },
+    {
+      "compiledSec": 0.002976,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "eagerSec": 0.006032,
+      "gpu": "h100",
+      "shape": "512",
+      "speedup": 2.026756
+    },
+    {
+      "compiledSec": 0.00633,
+      "denoiser": "drunet",
+      "dim": 2,
+      "eagerSec": 0.009776,
+      "gpu": "h100",
+      "shape": "512",
+      "speedup": 1.544326
+    },
+    {
+      "compiledSec": 0.002537,
+      "denoiser": "unet",
+      "dim": 2,
+      "eagerSec": 0.006184,
+      "gpu": "h100",
+      "shape": "512",
+      "speedup": 2.437935
+    },
+    {
+      "compiledSec": 0.010628,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "eagerSec": 0.022448,
+      "gpu": "h100",
+      "shape": "1024",
+      "speedup": 2.112151
+    },
+    {
+      "compiledSec": 0.022441,
+      "denoiser": "drunet",
+      "dim": 2,
+      "eagerSec": 0.036055,
+      "gpu": "h100",
+      "shape": "1024",
+      "speedup": 1.606667
+    },
+    {
+      "compiledSec": 0.009068,
+      "denoiser": "unet",
+      "dim": 2,
+      "eagerSec": 0.021633,
+      "gpu": "h100",
+      "shape": "1024",
+      "speedup": 2.385727
+    },
+    {
+      "compiledSec": 0.041738,
+      "denoiser": "dncnn",
+      "dim": 2,
+      "eagerSec": 0.088321,
+      "gpu": "h100",
+      "shape": "2048",
+      "speedup": 2.116097
+    },
+    {
+      "compiledSec": 0.08805,
+      "denoiser": "drunet",
+      "dim": 2,
+      "eagerSec": 0.140949,
+      "gpu": "h100",
+      "shape": "2048",
+      "speedup": 1.60079
+    },
+    {
+      "compiledSec": 0.035155,
+      "denoiser": "unet",
+      "dim": 2,
+      "eagerSec": 0.085033,
+      "gpu": "h100",
+      "shape": "2048",
+      "speedup": 2.418787
+    },
+    {
+      "compiledSec": 0.06168,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "eagerSec": 0.071724,
+      "gpu": "h100",
+      "shape": "128\u00b3",
+      "speedup": 1.162835
+    },
+    {
+      "compiledSec": 0.067823,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "eagerSec": 0.077244,
+      "gpu": "h100",
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 1.138916
+    },
+    {
+      "compiledSec": 0.083038,
+      "denoiser": "drunet",
+      "dim": 3,
+      "eagerSec": 0.085474,
+      "gpu": "h100",
+      "shape": "128\u00b3",
+      "speedup": 1.029331
+    },
+    {
+      "compiledSec": 0.1754,
+      "denoiser": "drunet",
+      "dim": 3,
+      "eagerSec": 0.179994,
+      "gpu": "h100",
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 1.02619
+    },
+    {
+      "compiledSec": 0.029448,
+      "denoiser": "unet",
+      "dim": 3,
+      "eagerSec": 0.04854,
+      "gpu": "h100",
+      "shape": "128\u00b3",
+      "speedup": 1.648306
+    },
+    {
+      "compiledSec": 0.031193,
+      "denoiser": "unet",
+      "dim": 3,
+      "eagerSec": 0.049822,
+      "gpu": "h100",
+      "shape": "8\u00d7512\u00d7512",
+      "speedup": 1.597243
+    },
+    {
+      "compiledSec": 0.134172,
+      "denoiser": "dncnn",
+      "dim": 3,
+      "eagerSec": 0.152783,
+      "gpu": "h100",
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.138709
+    },
+    {
+      "compiledSec": 0.175577,
+      "denoiser": "drunet",
+      "dim": 3,
+      "eagerSec": 0.179432,
+      "gpu": "h100",
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.021956
+    },
+    {
+      "compiledSec": 0.06263,
+      "denoiser": "unet",
+      "dim": 3,
+      "eagerSec": 0.099808,
+      "gpu": "h100",
+      "shape": "16\u00d7512\u00d7512",
+      "speedup": 1.593597
+    }
+  ]
+}

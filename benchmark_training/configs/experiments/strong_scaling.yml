@@ -16,11 +16,12 @@ solver:
       init_stepsize: 0.8
       denoiser_sigma: 0.05
       profiler_mode: [custom]
-      profiler_warmup: 3
-      profiler_active:  5 # record all remaining iterations after warmup 
+      profiler_warmup: 0
+      profiler_active:  0 # record all remaining iterations after warmup 
       profiler_per_step: [True]
+      deterministic: [False]
       distribute_model, patch_size, overlap, max_batch_size, checkpoint_batches: [
-        [true, 512, 32, 2, 'always']
+        [true, 512, 32, 1, 'always']
       ]
 
       slurm_gres, slurm_ntasks_per_node, slurm_nodes, image_size: [
@@ -43,7 +44,7 @@ solver:
 
       ]
 
-max-runs: 8
+max-runs: 6
 n-repetitions: 1
 plot: true
 html: true

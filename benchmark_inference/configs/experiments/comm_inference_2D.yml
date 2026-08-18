@@ -5,7 +5,7 @@ objective:
 
 dataset:
   - multiframe_superres:
-      image_size: [ 4096]
+      image_size: [ 8192]
       num_operators: 8
       noise_level: 0.1
 
@@ -23,12 +23,15 @@ solver:
         [512, 32, 4]
       ]
       slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_physics, distribute_denoiser: [
-        ["gpu:1", 1, 1, false, false],
         ["gpu:1", 1, 1, true, true],
         ["gpu:2", 2, 1, true, true],
         ["gpu:4", 4, 1, true, true],
         ["gpu:4", 4, 2, true, true],
         ["gpu:4", 4, 4, true, true],
+        ["gpu:4", 4, 8, true, true],
+        ["gpu:4", 4, 16, true, true],
+
+
       ]
 
 

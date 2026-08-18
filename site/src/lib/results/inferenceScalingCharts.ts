@@ -46,8 +46,8 @@ export const timingBreakdownSpec = {
     },
   },
   spec: {
-    width: 210,
-    height: 245,
+    width: 320,
+    height: 340,
     transform: [
       {
         fold: ["physicsSec", "denoisingSec", "overheadSec"],
@@ -73,7 +73,7 @@ export const timingBreakdownSpec = {
         },
         legend: {
           labelExpr:
-            "datum.label === 'physicsSec' ? 'Physics' : datum.label === 'denoisingSec' ? 'Denoising' : 'Residual overhead'",
+            "datum.label === 'physicsSec' ? 'Physics' : datum.label === 'denoisingSec' ? 'Denoising' : 'Metric evaluation'",
         },
       },
       tooltip: [
@@ -118,8 +118,8 @@ export const qualityPreservationSpec = {
     },
   },
   spec: {
-    width: 210,
-    height: 245,
+    width: 320,
+    height: 340,
     layer: [
       {
         mark: { type: "rule", strokeDash: [6, 5], color: "#8290a8" },
@@ -142,7 +142,6 @@ export const qualityPreservationSpec = {
             field: "psnrDifferenceDb",
             type: "quantitative",
             title: "ΔPSNR from reference (dB)",
-            scale: { domain: [-0.01, 0.01] },
             axis: { format: ".4f" },
           },
           color: {
@@ -234,139 +233,3 @@ export const efficiencySpec = (
     },
   ],
 });
-
-export const communicationScalingSpec = {
-  $schema: "https://vega.github.io/schema/vega-lite/v6.json",
-  description:
-    "Compute and attributed communication scaling for 2D and 3D distributed PnP.",
-  title: {
-    text: "Compute and communication scaling",
-    subtitle:
-      "Iterations 1–2 excluded; averages start at iteration 3 (2D: 3–10, 3D: 3–5).",
-  },
-  config,
-  vconcat: [
-    {
-      width: 680,
-      height: 260,
-      transform: [{ filter: "datum.mode === 'distributed'" }],
-      layer: [
-        {
-          mark: { type: "line", strokeDash: [6, 5], color: "#8290a8" },
-          encoding: {
-            x: gpuAxis,
-            y: {
-              field: "idealComputeSpeedup",
-              type: "quantitative",
-              title: "Compute speedup",
-            },
-            detail: { field: "problem" },
-          },
-        },
-        {
-          mark: {
-            type: "line",
-            point: { filled: true, size: 58 },
-            strokeWidth: 2.5,
-          },
-          encoding: {
-            x: gpuAxis,
-            y: {
-              field: "computeSpeedup",
-              type: "quantitative",
-              title: "Compute speedup",
-            },
-            color: {
-              field: "problem",
-              type: "nominal",
-              title: null,
-              scale: { range: colors },
-            },
-            tooltip: [
-              { field: "problem", type: "nominal", title: "Problem" },
-              { field: "gpuCount", type: "quantitative", title: "GPUs" },
-              {
-                field: "computeSpeedup",
-                type: "quantitative",
-                title: "Compute speedup",
-                format: ".2f",
-              },
-              { field: "nodeCount", type: "quantitative", title: "Nodes" },
-            ],
-          },
-        },
-      ],
-    },
-    {
-      width: 680,
-      height: 260,
-      transform: [
-        { filter: "datum.mode === 'distributed'" },
-        {
-          fold: ["computeCudaSec", "communicationCudaSec"],
-          as: ["component", "seconds"],
-        },
-        { filter: "datum.seconds > 0" },
-      ],
-      mark: {
-        type: "line",
-        point: { filled: true, size: 52 },
-        strokeWidth: 2.3,
-      },
-      encoding: {
-        x: gpuAxis,
-        y: {
-          field: "seconds",
-          type: "quantitative",
-          title: "CUDA time (s, log scale)",
-          scale: { type: "log" },
-        },
-        color: {
-          field: "problem",
-          type: "nominal",
-          title: "Problem",
-          scale: { range: colors },
-        },
-        strokeDash: {
-          field: "component",
-          type: "nominal",
-          title: "Profiler component",
-          scale: {
-            domain: ["computeCudaSec", "communicationCudaSec"],
-            range: [
-              [1, 0],
-              [7, 5],
-            ],
-          },
-          legend: {
-            labelExpr:
-              "datum.label === 'computeCudaSec' ? 'Compute' : 'Communication'",
-            symbolType: "stroke",
-            symbolSize: 180,
-            symbolStrokeWidth: 3,
-            symbolStrokeColor: "#20304e",
-            symbolFillColor: "transparent",
-          },
-        },
-        tooltip: [
-          { field: "problem", type: "nominal", title: "Problem" },
-          { field: "gpuCount", type: "quantitative", title: "GPUs" },
-          { field: "component", type: "nominal", title: "Component" },
-          {
-            field: "seconds",
-            type: "quantitative",
-            title: "Seconds",
-            format: ".4f",
-          },
-          {
-            field: "communicationSharePct",
-            type: "quantitative",
-            title: "Communication share (%)",
-            format: ".1f",
-          },
-        ],
-      },
-    },
-  ],
-  resolve: { scale: { color: "shared" } },
-};

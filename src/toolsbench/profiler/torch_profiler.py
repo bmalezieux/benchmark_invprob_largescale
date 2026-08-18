@@ -33,6 +33,7 @@ memory by 1024**2 for MB.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from collections import defaultdict
@@ -41,6 +42,7 @@ from pathlib import Path
 
 import pandas as pd
 import torch
+import torch.distributed as dist
 
 from toolsbench.profiler.base import BenchProfiler
 
@@ -106,35 +108,60 @@ def _group_by_key(avgs):
     return grouped
 
 
-def _comm_sec_in_subtree(event) -> float:
-    """Recursively sum device time (sec) of communication ops under *event*."""
-    total = 0.0
+def _comm_secs_in_subtree(event) -> list[float]:
+    """Ordered per-collective device times (sec) under *event*.
+
+    A list rather than a sum, because the cross-rank minimum has to be taken
+    per collective — "min first, add second". Summing here and taking the min
+    of the sums keeps whatever idle no single rank escaped; see
+    ``_sync_comm_metrics``.
+    """
+    out: list[float] = []
     for child in getattr(event, "cpu_children", []):
         if _is_comm_op(child.key):
-            total += child.device_time_total / 1e6
+            out.append(child.device_time_total / 1e6)
         else:
-            total += _comm_sec_in_subtree(child)
-    return total
+            out.extend(_comm_secs_in_subtree(child))
+    return out
 
 
 def _per_step_comm(events, section_names) -> dict:
-    """Total comm time (sec) within each user section, summed over the event tree."""
-    comm: dict = {name: 0.0 for name in section_names}
+    """Ordered per-collective times (sec) within each user section.
+
+    The order is the event-tree walk order, which is identical on every rank
+    (verified for forward and backward, including the parameter-sync burst), so
+    entry *i* is the same logical collective on all ranks.
+    """
+    comm: dict = {name: [] for name in section_names}
     for e in events:
         if e.is_user_annotation and e.key in comm:
-            comm[e.key] += _comm_sec_in_subtree(e)
+            comm[e.key].extend(_comm_secs_in_subtree(e))
     return comm
 
 
-def _section_summary(avgs, events=None) -> dict:
-    """Return per-iteration per-section benchopt metrics: ``{sec}_cuda_sec``,
-    ``{sec}_cpu_sec``, ``{sec}_comm_sec``, ``comm_cuda_sec``, ``comm_sync_sec``.
+def _section_summary(avgs, events=None) -> tuple[dict, dict]:
+    """Return ``(metrics, collectives)`` for one profiler cycle.
+
+    ``metrics`` are the per-iteration per-section benchopt metrics:
+    ``{sec}_cuda_sec``, ``{sec}_cpu_sec``, ``{sec}_transfer_sec``,
+    ``comm_cuda_sec``, ``comm_sync_sec`` — all scalars, all publishable.
+
+    ``collectives`` is ``{section: [per-collective seconds]}``, kept separate
+    from ``metrics`` precisely because it is NOT scalar: ``metrics`` flows to
+    benchopt, this does not. ``_sync_comm_metrics`` consumes it and it is then
+    discarded; it is never written to the parquet.
 
     ``comm_cuda_sec`` is the sum of the per-section comm times, so it always
-    equals the sum of the ``{sec}_comm_sec`` columns. NCCL kernels running
+    equals the sum of the ``{sec}_transfer_sec`` columns. NCCL kernels running
     outside any section (end-of-iteration barrier, callback-path broadcast)
     mostly spin-wait on inter-rank skew; their time is reported separately as
     ``comm_sync_sec`` instead of being folded into the communication total.
+
+    ``{sec}_transfer_sec`` holds THIS rank's raw collective time here, which is
+    ``transfer + wait`` fused together; ``_sync_comm_metrics`` reduces it across
+    ranks in ``end_iteration()`` into the pure transfer it is named for, and
+    emits the wait separately. In a single-process run there is no collective,
+    so the fused value is already 0 and the name holds trivially.
 
     Called once per profiler cycle (one iteration), so values are already per-iteration.
     """
@@ -158,14 +185,17 @@ def _section_summary(avgs, events=None) -> dict:
             # CPU-view duplicates
             total_nccl_sec += g["dev_time"] / 1e6
     comm_cuda_sec = 0.0
+    collectives: dict = {}
     if events is not None and section_names:
         # per-section comm time: walk the raw event tree to attribute comm to its section
-        for name, comm_sec in _per_step_comm(events, section_names).items():
-            out[f"{name}_comm_sec"] = round(comm_sec, 6)
+        collectives = _per_step_comm(events, section_names)
+        for name, secs in collectives.items():
+            comm_sec = sum(secs)
+            out[f"{name}_transfer_sec"] = round(comm_sec, 6)
             comm_cuda_sec += comm_sec
     out["comm_cuda_sec"] = round(comm_cuda_sec, 6)
     out["comm_sync_sec"] = round(max(total_nccl_sec - comm_cuda_sec, 0.0), 6)
-    return out
+    return out, collectives
 
 
 def _collect_op_rows(events) -> dict:
@@ -265,8 +295,15 @@ class TorchProfiler(BenchProfiler):
         mem_mb, self_mem_mb, count — one row per (section, child-op) pair per iteration.
 
     Benchopt metrics (``get_current_metrics()``)
-        ``{section}_cuda_sec``, ``{section}_cpu_sec``, ``{section}_comm_sec``,
+        ``{section}_cuda_sec``, ``{section}_cpu_sec``, ``{section}_transfer_sec``,
         ``comm_cuda_sec``, ``comm_sync_sec``, ``total_time_sec``, ``max_gpu_mb``.
+        Distributed runs additionally emit ``{section}_compute_sec`` (mean over
+        ranks), ``{section}_compute_max_sec`` (the critical path) and
+        ``{section}_wait_sec``; transfer becomes the min over ranks and cuda the
+        mean, so ``cuda_sec == compute_sec + transfer_sec + wait_sec`` holds
+        exactly per section and ``LB = compute_sec / compute_max_sec`` — see
+        ``_sync_comm_metrics``. This is the only profiler that reports
+        communication; the others ignore ``ctx``.
 
     warmup/active bound the profiling window; outside it the run executes at full speed.
     trace_dir raises ValueError with per_step=True (profiler is reset each iteration,
@@ -315,15 +352,153 @@ class TorchProfiler(BenchProfiler):
         self._current_metrics: dict = {}
         self._pending_summary: dict = {}
         self._pending_ops: dict = {}
+        # {section: [per-collective seconds]} — non-scalar, so it lives here
+        # rather than in _pending_summary, which flows to benchopt.
+        self._pending_collectives: dict = {}
         self._iter_t0: float = 0.0
         self._prof = None
         self._started = False
         self._stopped = False
+        self._metric_keys: list[str] | None = None
+        self._collective_counts: dict | None = None
+
+    def _sync_comm_metrics(self, ctx) -> None:
+        """Reduce the per-section timings across ranks, in place. Rationale and
+        worked examples in ``docs/comm-metrics-plan.md``. Each column becomes:
+
+            ``{sec}_transfer_sec``     -> min per collective, summed  (pure transfer)
+            ``{sec}_wait_sec``         = mean(raw) - transfer          (average idle)
+            ``{sec}_compute_sec``      -> mean of ``cuda_r - collective_r`` (additive)
+            ``{sec}_compute_max_sec``  -> max of the same             (critical path)
+            ``{sec}_cuda_sec``         -> mean (redundant; kept for other consumers)
+
+        Called on EVERY iteration, not only inside the recording window, so the
+        collectives stay in lockstep across ranks.
+        """
+        if ctx is None or not getattr(ctx, "use_dist", False):
+            return
+
+        # this rank's own compute (section span - its own collective time),
+        # formed BEFORE the latch so it lands in the broadcast key list
+        summary = self._pending_summary
+        collectives = self._pending_collectives
+        for key in list(summary):
+            if key.endswith("_transfer_sec"):
+                section = key[: -len("_transfer_sec")]
+                cuda = summary.get(f"{section}_cuda_sec")
+                if cuda is not None:
+                    summary[f"{section}_compute_sec"] = round(cuda - summary[key], 6)
+
+        if self._metric_keys is None:
+            # Rank 0's key list is authoritative: a rank holding no patches
+            # takes a different branch, so its key set can differ and
+            # mismatched lengths would deadlock. comm_cuda_sec is excluded (a
+            # cross-section aggregate, rebuilt below). The collective counts
+            # travel along: they fix the per-collective slice layout.
+            box = [
+                (
+                    sorted(
+                        k
+                        for k in summary
+                        if k.endswith(("_transfer_sec", "_cuda_sec", "_compute_sec"))
+                        and k != "comm_cuda_sec"
+                    ),
+                    {name: len(secs) for name, secs in collectives.items()},
+                )
+            ]
+            ctx.broadcast_object_list(box, src=0)
+            latched_keys, latched_counts = box[0]
+            if not latched_keys:
+                return  # nothing profiled yet; every rank takes this branch
+            self._metric_keys = [*latched_keys, "comm_sync_sec"]
+            self._collective_counts = latched_counts
+
+        keys = self._metric_keys
+        counts = self._collective_counts
+        n = len(keys)
+        sections = sorted(counts)
+
+        # per-collective times in the latched layout; a section whose count
+        # drifted this iteration is padded with +inf and flagged, so EVERY rank
+        # falls back to the section-level minimum for it, in step
+        per_collective: list[float] = []
+        aligned: list[float] = []
+        for name in sections:
+            secs = collectives.get(name, [])
+            ok = len(secs) == counts[name]
+            aligned.append(1.0 if ok else 0.0)
+            per_collective.extend(secs if ok else [math.inf] * counts[name])
+
+        # +/-inf for a key this rank lacks, so it cannot win either extreme
+        lo = torch.tensor(
+            [summary.get(k, math.inf) for k in keys] + per_collective,
+            dtype=torch.float64,
+            device=self._device,
+        )
+        hi = torch.tensor(
+            [summary.get(k, -math.inf) for k in keys],
+            dtype=torch.float64,
+            device=self._device,
+        )
+        # values, presence mask, aligned flags: the mean must divide by the
+        # ranks that actually reported a key, and inf would poison a sum, so an
+        # absent key contributes 0 to both halves
+        totals = torch.tensor(
+            [summary.get(k, 0.0) for k in keys]
+            + [1.0 if k in summary else 0.0 for k in keys]
+            + aligned,
+            dtype=torch.float64,
+            device=self._device,
+        )
+        lo = ctx.all_reduce(lo, op=dist.ReduceOp.MIN)
+        hi = ctx.all_reduce(hi, op=dist.ReduceOp.MAX)
+        totals = ctx.all_reduce(totals, op=dist.ReduceOp.SUM)
+        if not summary:
+            return  # outside the window: reduced for lockstep only, result unused
+
+        # min first, add second: summing the per-collective minima gives the
+        # real transfer, where the min of the sums would keep any idle no single
+        # rank escaped. Trusted only where every rank packed the latched layout.
+        world_size = float(getattr(ctx, "world_size", 1) or 1)
+        transfer_by_section: dict = {}
+        offset = n
+        for i, name in enumerate(sections):
+            count = counts[name]
+            if float(totals[2 * n + i]) == world_size:
+                mins = [float(lo[offset + j]) for j in range(count)]
+                transfer_by_section[name] = sum(m for m in mins if math.isfinite(m))
+            offset += count
+
+        comm_cuda_sec = 0.0
+        for i, key in enumerate(keys):
+            low = float(lo[i])
+            low = low if math.isfinite(low) else 0.0
+            high = float(hi[i])
+            high = high if math.isfinite(high) else low
+            count = float(totals[n + i])
+            mean = float(totals[i]) / count if count > 0 else low
+            if key.endswith("_transfer_sec"):
+                section = key[: -len("_transfer_sec")]
+                transfer = transfer_by_section.get(section, low)
+                summary[key] = round(transfer, 6)
+                summary[f"{section}_wait_sec"] = round(max(mean - transfer, 0.0), 6)
+                comm_cuda_sec += transfer
+            elif key.endswith("_compute_sec"):
+                section = key[: -len("_compute_sec")]
+                summary[key] = round(mean, 6)
+                summary[f"{section}_compute_max_sec"] = round(high, 6)
+            elif key.endswith("_cuda_sec"):
+                summary[key] = round(mean, 6)
+            else:  # comm_sync_sec: an out-of-section floor, not an additive term
+                summary[key] = round(low, 6)
+        summary["comm_cuda_sec"] = round(comm_cuda_sec, 6)
 
     def _on_trace_ready(self, prof):
         """per_step callback: capture this cycle's section summary + per-op detail."""
         events = prof.events()
-        self._pending_summary = _section_summary(prof.key_averages(), events)
+        self._pending_summary, self._pending_collectives = _section_summary(
+            prof.key_averages(), events
+        )
         self._pending_ops = _collect_op_rows(events)
 
     def _start_profiler(self):
@@ -410,6 +585,9 @@ class TorchProfiler(BenchProfiler):
         if self._started and not self._stopped:
             self._prof.step()
 
+        # collective — must run on every rank every iteration (see docstring)
+        self._sync_comm_metrics(ctx)
+
         if self._warmup <= self._iter_count and (
             self._active == 0 or self._iter_count < self._warmup + self._active
         ):
@@ -426,6 +604,7 @@ class TorchProfiler(BenchProfiler):
 
         self._pending_summary = {}
         self._pending_ops = {}
+        self._pending_collectives = {}
         # reset peak so next iteration's max_gpu_mb reflects only that iteration
         if self._has_cuda:
             torch.cuda.reset_peak_memory_stats(self._device)

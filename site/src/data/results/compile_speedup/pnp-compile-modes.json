@@ -1,0 +1,98 @@
+{
+  "id": "compile-pnp-modes",
+  "methodology": {
+    "compileModes": {
+      "fused": "torch.compile applied to the whole per-iteration step (gradient + prox + clamp) as one region",
+      "post": "torch.compile applied after the distributed wrapper",
+      "pre": "torch.compile applied to the denoiser (and physics ops) before the distributed wrapper"
+    },
+    "firstIteration": "includes one-time graph compilation cost",
+    "independentRepetitions": 1,
+    "speedup": "baseline 1-GPU compile=None stable time / stable time",
+    "stableIteration": "mean over the last 5 timed iterations"
+  },
+  "provenance": {
+    "accelerator": "NVIDIA H100 80GB HBM3: cuda_13.2",
+    "benchmarkGitTag": null,
+    "config": null,
+    "platform": "Linux",
+    "runDate": "2026-07-10T14:38:18.512024",
+    "source": "result_benchmark/benchmark_inference/tomography_2D_compile/benchopt_run_2026-07-10_14h38m18.parquet",
+    "sourceSha256": "c72ccb60397a35ce9b256da412b1d6f48ae7d6a51b154c1d0a6820fb5fb14216"
+  },
+  "schemaVersion": 1,
+  "values": [
+    {
+      "compileMode": "None",
+      "firstIterSec": 2.377329,
+      "firstIterStdSec": 0.952613,
+      "gpuCount": 1,
+      "speedup": 1.0,
+      "stableIterSec": 0.586893,
+      "stableIterStdSec": 0.000186
+    },
+    {
+      "compileMode": "pre",
+      "firstIterSec": 15.790988,
+      "firstIterStdSec": 4.163291,
+      "gpuCount": 1,
+      "speedup": 1.534731,
+      "stableIterSec": 0.382408,
+      "stableIterStdSec": 0.001382
+    },
+    {
+      "compileMode": "post",
+      "firstIterSec": 15.79502,
+      "firstIterStdSec": 2.427736,
+      "gpuCount": 1,
+      "speedup": 1.489527,
+      "stableIterSec": 0.394013,
+      "stableIterStdSec": 0.002777
+    },
+    {
+      "compileMode": "fused",
+      "firstIterSec": 14.241806,
+      "firstIterStdSec": 0.606527,
+      "gpuCount": 1,
+      "speedup": 1.500148,
+      "stableIterSec": 0.391223,
+      "stableIterStdSec": 0.003592
+    },
+    {
+      "compileMode": "None",
+      "firstIterSec": 2.944587,
+      "firstIterStdSec": 1.066158,
+      "gpuCount": 2,
+      "speedup": 1.291668,
+      "stableIterSec": 0.454368,
+      "stableIterStdSec": 0.001726
+    },
+    {
+      "compileMode": "pre",
+      "firstIterSec": 14.977346,
+      "firstIterStdSec": 2.516838,
+      "gpuCount": 2,
+      "speedup": 1.980035,
+      "stableIterSec": 0.296405,
+      "stableIterStdSec": 0.000674
+    },
+    {
+      "compileMode": "post",
+      "firstIterSec": 26.784286,
+      "firstIterStdSec": 3.91975,
+      "gpuCount": 2,
+      "speedup": 1.723114,
+      "stableIterSec": 0.3406,
+      "stableIterStdSec": 0.021443
+    },
+    {
+      "compileMode": "fused",
+      "firstIterSec": 24.889129,
+      "firstIterStdSec": 3.468888,
+      "gpuCount": 2,
+      "speedup": 1.763145,
+      "stableIterSec": 0.332867,
+      "stableIterStdSec": 0.002248
+    }
+  ]
+}
