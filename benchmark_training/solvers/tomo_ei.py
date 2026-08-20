@@ -1,0 +1,172 @@
+from benchopt import BaseSolver
+from benchopt.stopping_criterion import NoCriterion
+from deepinv.distributed import DistributedContext
+
+from toolsbench.invprob.base import InvProb
+from toolsbench.profiler import create_profiler
+from toolsbench.solver.tomo_ei import TomoEISolver
+from toolsbench.utils.solver_utils import (
+    build_solver_name,
+    get_device_from_context,
+    setup_distributed_env,
+)
+
+
+class Solver(BaseSolver):
+    """Self-supervised cryo-ET training (one training step per iteration)."""
+
+    name = "TomoEI"
+
+    sampling_strategy = "callback"
+    # Disable convergence checking — run for exactly max_runs training steps.
+    stopping_criterion = NoCriterion()
+
+    parameters = {
+        # --- Physics ---
+        # auto | astra | torch | torch_exact. auto = astra where its CUDA
+        # kernels can run, else torch. torch reproduces astra's approximate
+        # adjoint (so switching backends leaves the gradient unchanged);
+        # torch_exact uses the true transpose instead.
+        "tomography_backend": ["auto"],
+        # None = one full operator per rank; "auto" = one per rank; int = that
+        # many. Capped at the half-set's tilt count.
+        "num_operators": [None],
+        # --- Model architecture ---
+        "f_maps": [64],
+        "num_levels": [4],
+        "compile_model": [False],
+        # --- Loss / optimizer ---
+        "eq_weight": [0.0],
+        "learning_rate": [1e-4],
+        "grad_clip": [1.0],
+        # "off" = fp32; "fp16" / "bf16" autocast every denoiser pass (the
+        # physics, the losses and the FSC always see fp32). Same spelling as
+        # demo_cyo. fp16 adds a GradScaler and reports amp_scale / amp_skipped:
+        # a skipped step costs the same time as a taken one.
+        "mixed_precision": ["off"],
+        # --- Metric ---
+        "fsc_threshold": [0.143],
+        "pixel_size": [1.0],
+        # --- Distributed processing ---
+        "distribute_model": [False],
+        "patch_size": [128],
+        "overlap": [16],
+        "max_batch_size": [1],
+        "checkpoint_batches": ["auto"],
+        # --- SLURM / torchrun ---
+        "slurm_nodes": [1],
+        "slurm_ntasks_per_node": [1],
+        "slurm_gres": ["gpu:1"],
+        "torchrun_nproc_per_node": [1],
+        # --- Distributed context ---
+        "deterministic": [False],
+        # --- Logging / profiling ---
+        "name_prefix": ["tomo_ei"],
+        "profiler_mode": ["custom"],
+        "profiler_warmup": [0],
+        "profiler_active": [0],
+        "profiler_trace_dir": [None],
+        "profiler_per_step": [True],
+        "profiler_repeat": [1],
+        "profiler_save_file": [False],
+    }
+
+    def set_objective(
+        self,
+        measurements,
+        physics,
+        ground_truth_shape,
+        num_operators,
+        ground_truth=None,
+        min_pixel=0.0,
+        max_pixel=1.0,
+        **kwargs,
+    ):
+        self.problem = InvProb(
+            ground_truth=ground_truth,
+            measurements=measurements,
+            physics=physics,
+            ground_truth_shape=ground_truth_shape,
+            num_operators=num_operators,
+            min_pixel=min_pixel,
+            max_pixel=max_pixel,
+        )
+        self.ctx = None
+        self._algo = None
+        self.world_size = setup_distributed_env()
+        self.distributed_mode = self.world_size > 1
+        self.name = build_solver_name(
+            self.name_prefix,
+            self.slurm_nodes,
+            self.slurm_ntasks_per_node,
+            self.torchrun_nproc_per_node,
+            self.distributed_mode,
+        )
+
+    def run(self, cb):
+        if self.distributed_mode:
+            # seed_offset=False: the denoiser is replicated across ranks and
+            # split by input tiles, so every rank must initialise the *same*
+            # weights. deepinv's default seeds each rank as seed + rank, which
+            # gives each one a different model (measured: differing parameter
+            # checksums and a 300x gradient-norm spread across two ranks).
+            with DistributedContext(
+                seed=42,
+                cleanup=True,
+                deterministic=self.deterministic,
+                seed_offset=False,
+            ) as ctx:
+                self.ctx = ctx
+                self._run_with_context(cb, ctx)
+        else:
+            self._run_with_context(cb, ctx=None)
+
+    def _run_with_context(self, cb, ctx):
+        device = get_device_from_context(ctx)
+        profiler = create_profiler(
+            self.profiler_mode,
+            device,
+            self.name,
+            warmup=self.profiler_warmup,
+            active=self.profiler_active,
+            trace_dir=self.profiler_trace_dir,
+            per_step=self.profiler_per_step,
+            repeat=self.profiler_repeat,
+            save_file=self.profiler_save_file,
+        )
+        with profiler:
+            self._algo = TomoEISolver(
+                problem=self.problem,
+                device=device,
+                profiler=profiler,
+                ctx=ctx,
+                distributed_mode=self.distributed_mode,
+                tomography_backend=self.tomography_backend,
+                num_operators=self.num_operators,
+                eq_weight=self.eq_weight,
+                learning_rate=self.learning_rate,
+                grad_clip=self.grad_clip,
+                f_maps=self.f_maps,
+                num_levels=self.num_levels,
+                compile_model=self.compile_model,
+                distribute_model=self.distribute_model,
+                patch_size=self.patch_size,
+                overlap=self.overlap,
+                max_batch_size=self.max_batch_size,
+                checkpoint_batches=self.checkpoint_batches,
+                fsc_threshold=self.fsc_threshold,
+                pixel_size=self.pixel_size,
+                mixed_precision=self.mixed_precision,
+            )
+            self._algo.run(cb)
+        profiler.finalize(ctx)
+
+    def get_result(self):
+        if self._algo is None:
+            return {"reconstruction": None}
+        result = dict(name=self.name)
+        result.update(self._algo.get_result())
+        return result
+
+    def get_next(self, stop_val):
+        return stop_val + 1

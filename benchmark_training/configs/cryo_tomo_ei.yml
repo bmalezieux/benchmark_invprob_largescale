@@ -1,0 +1,39 @@
+# Cluster sweep for the cryo tomo_ei training case: denoiser tiling x angle
+# sharding x tomography backend, at a realistic volume size.
+objective:
+  - reconstruction_objective
+
+dataset:
+  - cryo:
+      volume_size: [[512, 256, 512]] # [[1024, 512, 1024]]
+      num_angles: 41
+      tilt_min: -60.0
+      tilt_max: 60.0
+      noise_level: 0.1
+      seed: 42
+
+solver:
+  - TomoEI:
+      eq_weight: [2.0]
+      # Crossed with the rows below: fp16 and bf16 autocast the denoiser only.
+      # bf16 is what demo_cyo runs at native resolution — fp16's loss scaling
+      # overflows there, so read its rows next to the amp_skipped column.
+      mixed_precision: ["off", "fp16", "bf16"]
+      patch_size: [128]
+      overlap: [16]
+      max_batch_size: [1]
+      checkpoint_batches: [auto]
+      profiler_mode: [custom]
+      profiler_per_step: [true]
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_model, num_operators, tomography_backend: [
+        ["gpu:2", 2, 1, true,  null,   "astra"],
+        ["gpu:2", 2, 1, true,  "auto", "astra"],
+        ["gpu:2", 2, 1, true,  null,     "torch"],
+        ["gpu:2", 2, 1, true,  "auto", "torch"],
+        
+      ]
+
+max-runs: 3
+n-repetitions: 1
+plot: true
+html: true
