@@ -11,7 +11,14 @@ from functools import partial
 
 import torch
 
-from deepinv.distributed.framework import DistributedStackedLinearPhysics
+# deepinv moved this class between layouts: on ``main`` (what CI installs) it
+# is re-exported from ``deepinv.distributed``; on the distributed branch it
+# lives in the ``framework`` subpackage and is not re-exported. Both revisions
+# give it the same constructor, so trying the public path first is enough.
+try:
+    from deepinv.distributed import DistributedStackedLinearPhysics
+except ImportError:  # pragma: no cover - depends on the installed deepinv
+    from deepinv.distributed.framework import DistributedStackedLinearPhysics
 from deepinv.utils.tensorlist import TensorList
 
 from .tomography import TomographyEM

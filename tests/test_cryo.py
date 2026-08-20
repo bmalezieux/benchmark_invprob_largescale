@@ -1,9 +1,14 @@
-"""Tests for the synthetic cryo-ET (``tomo_ei``) case.
+"""Physics, losses, model and metric for the synthetic cryo-ET (``tomo_ei``) case.
+
+The problem itself is tested in ``test_invprob.py`` (``TestCryoEIInvProb``) and
+the solver in ``test_solver.py`` (``TestTomoEISolverMixedPrecision``), with the
+rest of their kind.
 
 Everything here runs on CPU with the pure-torch tomography backend: astra ships
 CUDA kernels, so the torch operator is what makes this path testable at all.
-Nothing calls ``distribute`` — that needs a live process group, and the
-distributed paths are covered by the benchmark runs instead.
+Nothing calls ``distribute`` and nothing runs a training step — both need a
+live process group to mean anything, and the distributed paths are covered by
+the benchmark runs instead.
 """
 
 import pytest
@@ -12,8 +17,6 @@ from deepinv.distributed import DistributedContext
 
 from toolsbench.invprob import CryoEIInvProb
 from toolsbench.invprob.base import InvProbConfig
-from toolsbench.profiler import NullProfiler
-from toolsbench.solver.tomo_ei import TomoEISolver
 from toolsbench.utils.cryo import (
     GpuFSC,
     build_cryo_pair,
@@ -45,32 +48,6 @@ def _invprob(device=torch.device("cpu"), **params):
             params=defaults,
         )
     )
-
-
-def test_invprob_shapes():
-    problem = _invprob()
-    spec = problem.physics
-
-    assert problem.ground_truth.shape == (1, 1, *VOLUME_SIZE)
-    assert len(problem.measurements) == 2
-    for measurement in problem.measurements:
-        # (B, C, V, A, N): the detector grid is (Y, X) of the volume, and every
-        # half carries the whole tilt series.
-        assert measurement.shape == (
-            1,
-            1,
-            VOLUME_SIZE[0],
-            NUM_ANGLES,
-            VOLUME_SIZE[2],
-        )
-
-    # A half-set is one noise realisation of the *same* geometry, the way
-    # split1/split2 are the even and odd movie frames at each tilt.
-    assert torch.equal(spec.angles_evn, spec.angles_odd)
-    assert spec.angles_evn.tolist() == pytest.approx(
-        torch.linspace(-60.0, 60.0, NUM_ANGLES).tolist()
-    )
-    assert not torch.allclose(*problem.measurements)
 
 
 def test_num_operators_resolution():
@@ -187,56 +164,6 @@ def test_fsc_self_correlation():
     assert curve.min() == pytest.approx(1.0, abs=1e-4)
     # A curve that never crosses the threshold reports the last shell.
     assert fsc_shell(curve, 0.143) == len(curve) - 1
-
-
-@pytest.mark.parametrize("mixed_precision", ["off", "fp16", "bf16"])
-def test_solver_two_steps(mixed_precision):
-    # Both half dtypes are GPU paths: this CPU's oneDNN has no bf16/fp16 conv3d
-    # backward ("DNNL does not support bf16/f16 backward ... avx2_vnni_2").
-    device = torch.device("cpu")
-    if mixed_precision != "off":
-        if not torch.cuda.is_available():
-            pytest.skip(f"{mixed_precision} autocast needs CUDA on this platform")
-        device = torch.device("cuda")
-
-    problem = _invprob(device=device)
-    solver = TomoEISolver(
-        problem=problem,
-        device=device,
-        profiler=NullProfiler(),
-        ctx=None,
-        distributed_mode=False,
-        tomography_backend="torch",
-        eq_weight=1.0,
-        f_maps=4,
-        num_levels=2,
-        learning_rate=1e-3,
-        mixed_precision=mixed_precision,
-    )
-
-    steps = []
-
-    def cb():
-        steps.append(solver.get_result())
-        return len(steps) <= 2
-
-    solver.run(cb)
-    result = solver.get_result()
-
-    assert len(steps) == 3  # step 0 (untrained) + two training steps
-    assert result["reconstruction"].shape == (1, 1, *VOLUME_SIZE)
-    # Autocast covers the denoiser only, so the reconstruction — which comes
-    # back through the physics — stays fp32 whatever the precision setting.
-    assert result["reconstruction"].dtype == torch.float32
-    assert result["fsc_res"] is not None and result["fsc_shell"] is not None
-    assert torch.isfinite(torch.tensor(result["train_loss"]))
-    assert result["train_loss"] < steps[1]["train_loss"]
-    # The scaler exists on fp16 and only there; its scale and its skipped-step
-    # count are reported so an fp16 timing can be read for what it is.
-    if mixed_precision == "fp16":
-        assert result["amp_scale"] > 0 and result["amp_skipped"] is not None
-    else:
-        assert result["amp_scale"] is None and result["amp_skipped"] is None
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
