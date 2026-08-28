@@ -31,6 +31,10 @@ def main(argv: list[str] | None = None) -> int:
         from toolsbench.visualization.cli import main as visualization_main
 
         return visualization_main("vizwebsite", argv[1:])
+    if argv[:1] == ["autotune"]:
+        from toolsbench.autotune.cli import main as autotune_main
+
+        return autotune_main(argv[1:])
     if argv[:1] == ["prepareweights"]:
         from toolsbench.utils import download_denoiser_weights
 
@@ -47,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
         "visualizations with `toolsbench vizinference --help` or "
         "`toolsbench viztraining --help`. Generate website result data with "
         "`toolsbench vizwebsite --help`. Cache pretrained denoiser weights "
-        "for offline compute nodes with `toolsbench prepareweights [name ...]`."
+        "for offline compute nodes with `toolsbench prepareweights [name ...]`. "
+        "Suggest tiling parameters for a distributed config with "
+        "`toolsbench autotune --help`."
     )
     return 0
