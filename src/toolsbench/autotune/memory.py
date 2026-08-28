@@ -177,7 +177,7 @@ def peak_mb(
     # tile of every call in the graph. n_calls is how many times the tiled
     # denoiser runs in one step, counted by the probe's identity denoiser
     # rather than inferred -- the calls may come from the loss rather than from
-    # the model's forward. 
+    # the model's forward.
     count = (n_calls * k) if (train and ckpt == "never") else b
 
     # The tile copies that sit outside the graph in every regime. This

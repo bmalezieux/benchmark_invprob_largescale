@@ -1,7 +1,9 @@
 """CPU-only tests for the tiling-parameter advisor.
 
 Memory is injected through ``tile_mb_table`` and seam results are constructed
-directly, so nothing here needs a GPU.
+directly, so nothing here needs a GPU -- but the advisor takes its tile geometry
+from the real tiler, so it needs a deepinv with the distributed tiling API. CI
+pins an older one, hence the skip.
 """
 
 import math
@@ -9,7 +11,12 @@ import textwrap
 
 import pytest
 
-from toolsbench.autotune import (
+pytest.importorskip(
+    "deepinv.distributed.strategies.utils",
+    reason="needs a deepinv with the distributed tiling API",
+)
+
+from toolsbench.autotune import (  # noqa: E402
     Candidate,
     SeamResult,
     default_patch_grid,
@@ -20,8 +27,11 @@ from toolsbench.autotune import (
     saturating_overlap,
     top3,
 )
-from toolsbench.autotune import seam as seam_mod
-from toolsbench.autotune.config import expand_params, parse_config
+from toolsbench.autotune import seam as seam_mod  # noqa: E402
+from toolsbench.autotune.config import (  # noqa: E402
+    expand_params,
+    parse_config,
+)
 
 IMG_2D = (1, 3, 4096, 4096)
 IMG_3D = (1, 1, 512, 512, 512)
