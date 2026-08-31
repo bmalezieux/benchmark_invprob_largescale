@@ -6,6 +6,7 @@ from toolsbench.invprob.base import InvProb
 from toolsbench.profiler import NullProfiler
 from toolsbench.solver.denoiser import DenoiserSolver
 from toolsbench.solver.pnp import PnPSolver
+from toolsbench.solver.tomo_ei import TomoEISolver
 from toolsbench.solver.unrolled_pnp import UnrolledPnPSolver
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,20 @@ def _make_unrolled_solver(**kwargs):
     )
     defaults.update(kwargs)
     return UnrolledPnPSolver(**defaults)
+
+
+def _make_tomo_ei_solver(**kwargs):
+    """A cryo-ET solver built but never run — enough to check its setup."""
+    defaults = dict(
+        problem=None,
+        device=torch.device("cpu"),
+        profiler=NullProfiler(),
+        ctx=None,
+        distributed_mode=False,
+        tomography_backend="torch",
+    )
+    defaults.update(kwargs)
+    return TomoEISolver(**defaults)
 
 
 def _mock_denoiser():
@@ -391,3 +406,58 @@ class TestDenoiserSolver:
         assert result["flops"] == 100
         assert result["arith_intensity"] == 10.0
         assert result["denoise_time_sec"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# TomoEISolver mixed precision
+# ---------------------------------------------------------------------------
+
+
+class TestTomoEISolverMixedPrecision:
+    @pytest.mark.parametrize(
+        "mixed_precision,expected_dtype",
+        [("off", None), ("fp16", torch.float16), ("bf16", torch.bfloat16)],
+    )
+    def test_setup(self, mixed_precision, expected_dtype):
+        solver = _make_tomo_ei_solver(mixed_precision=mixed_precision)
+
+        assert solver._amp_dtype is expected_dtype
+        # The scaler exists on fp16 and only there: fp16 gradients underflow
+        # without a loss multiply, while bf16 shares fp32's exponent range.
+        assert (solver._scaler is not None) == (mixed_precision == "fp16")
+
+    def test_rejects_unknown(self):
+        with pytest.raises(ValueError, match="mixed_precision must be one of"):
+            _make_tomo_ei_solver(mixed_precision="fp8")
+
+    def test_amp_wrapper_casts_denoiser_only(self):
+        """``_amp`` autocasts the model call and hands back fp32.
+
+        The ``.float()`` is what keeps the physics and the FSC in fp32: astra
+        asserts float32 input, and ``torch.fft`` raises on bfloat16. ``"off"``
+        must be a strict no-op — the model comes back unwrapped, entering no
+        context.
+        """
+
+        class Probe(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = torch.nn.Conv3d(1, 1, 1)
+                self.seen = None
+
+            def forward(self, x):
+                out = self.conv(x)
+                self.seen = out.dtype
+                return out
+
+        volume = torch.randn(1, 1, 8, 4, 8)
+
+        model = Probe()
+        assert _make_tomo_ei_solver(mixed_precision="off")._amp(model) is model
+
+        model = Probe()
+        wrapped = _make_tomo_ei_solver(mixed_precision="bf16")._amp(model)
+        assert wrapped is not model
+        out = wrapped(volume)
+        assert model.seen == torch.bfloat16  # the denoiser ran reduced-precision
+        assert out.dtype == torch.float32  # everything downstream sees fp32
