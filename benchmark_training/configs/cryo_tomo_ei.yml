@@ -15,10 +15,11 @@ dataset:
 solver:
   - TomoEI:
       eq_weight: [2.0]
-      # Crossed with the rows below: fp16 and bf16 autocast the denoiser only.
-      # bf16 is what demo_cyo runs at native resolution — fp16's loss scaling
-      # overflows there, so read its rows next to the amp_skipped column.
-      mixed_precision: ["off", "fp16", "bf16"]
+      mixed_precision: ["off"]
+      # torch.backends.cudnn.benchmark. On ROCm this drives MIOpen's kernel
+      # search; with it off, conv3d backward ran 10-54x slower than forward on
+      # MI300A. Needs ROCm >= 7 on AMD.
+      cudnn_benchmark: [true]
       patch_size: [128]
       overlap: [16]
       max_batch_size: [1]
@@ -27,9 +28,7 @@ solver:
       profiler_per_step: [true]
       slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_model, num_operators, tomography_backend: [
         ["gpu:2", 2, 1, true,  null,   "astra"],
-        ["gpu:2", 2, 1, true,  "auto", "astra"],
         ["gpu:2", 2, 1, true,  null,     "torch"],
-        ["gpu:2", 2, 1, true,  "auto", "torch"],
         
       ]
 

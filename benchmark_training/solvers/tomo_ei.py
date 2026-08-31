@@ -44,6 +44,10 @@ class Solver(BaseSolver):
         # demo_cyo. fp16 adds a GradScaler and reports amp_scale / amp_skipped:
         # a skipped step costs the same time as a taken one.
         "mixed_precision": ["off"],
+        # torch.backends.cudnn.benchmark. On ROCm this drives MIOpen's kernel
+        # search; leaving it off is what made conv3d backward 10-54x slower than
+        # forward on MI300A. Needs ROCm >= 7 on AMD to help. See the solver.
+        "cudnn_benchmark": [True],
         # --- Metric ---
         "fsc_threshold": [0.143],
         "pixel_size": [1.0],
@@ -157,6 +161,7 @@ class Solver(BaseSolver):
                 fsc_threshold=self.fsc_threshold,
                 pixel_size=self.pixel_size,
                 mixed_precision=self.mixed_precision,
+                cudnn_benchmark=self.cudnn_benchmark,
             )
             self._algo.run(cb)
         profiler.finalize(ctx)

@@ -58,6 +58,7 @@ class TomoEISolver:
         fsc_threshold=0.143,
         pixel_size=1.0,
         mixed_precision="off",
+        cudnn_benchmark=True,
     ):
         self.problem = problem
         self.device = device
@@ -80,6 +81,19 @@ class TomoEISolver:
         self.fsc_threshold = fsc_threshold
         self.pixel_size = pixel_size
         self.mixed_precision = mixed_precision
+        # On ROCm this is HIPified to MIOpen and passed as the exhaustiveSearch
+        # argument of miopenFindConvolution*Algorithm (see Conv_miopen.cpp), so
+        # despite the cuDNN name it is what lets MIOpen search for a backward
+        # kernel at all. Off by default in torch, and that default is what made
+        # conv3d backward 10-54x slower than forward on MI300A: measured on
+        # conv3d 192->64 @96^3, backward went 184 ms -> 25 ms and the
+        # backward/forward ratio 10.1x -> 2.5x, matching a V100's 2.9x.
+        # AMD needs ROCm >= 7 for this to help -- on ROCm 6.2 the search finds
+        # nothing better (1060.12 ms -> 1060.96 ms) because the kernels are not
+        # there. The search runs once per input shape and is cached in-process,
+        # so a fixed-tile workload pays it only at startup.
+        torch.backends.cudnn.benchmark = cudnn_benchmark
+        self.cudnn_benchmark = cudnn_benchmark
         if mixed_precision not in AMP_DTYPES:
             raise ValueError(
                 f"mixed_precision must be one of {list(AMP_DTYPES)}, "
